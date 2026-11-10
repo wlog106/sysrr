@@ -1,0 +1,9 @@
+# Syscall cases of sc_target that a replay cannot reproduce yet, with the reason.
+# tests/test_replay.sh fails on any case that is not listed here.
+#
+# scm_rights_recv: a file received over a socket. The log has the fd number, not
+#                  the file, so the stand-in is /dev/null and a real mmap fails.
+# semctl_getall:   the kernel writes one u16 per semaphore; the count is known
+#                  only inside the kernel, so the recorder cannot size the copy.
+scm_rights_recv
+semctl_getall

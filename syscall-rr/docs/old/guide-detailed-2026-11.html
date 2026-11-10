@@ -1,0 +1,929 @@
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+<title>Inside sysrr</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans+Condensed:wght@500;600&family=IBM+Plex+Sans:ital,wght@0,400;0,600;1,400&display=swap">
+<style>
+/* Layout: sticky contents rail on the left, one reading column; diagrams may run wider than the text. */
+:root {
+  --bg: #f3f5f4;
+  --surface: #ffffff;
+  --ink: #18201f;
+  --muted: #586563;
+  --line: #d3dbd9;
+  --kernel: #0b6f68;
+  --kernel-soft: #e1f0ee;
+  --user: #9a520c;
+  --user-soft: #f7ebdc;
+  --good: #2d7a33;
+  --good-soft: #e3f1e3;
+  --bad: #b1261d;
+  --bad-soft: #f8e3e1;
+  --code-bg: #e9eeed;
+  --f-display: "IBM Plex Sans Condensed", "Arial Narrow", system-ui, sans-serif;
+  --f-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --f-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: #0e1413; --surface: #151d1c; --ink: #e2eae8; --muted: #94a5a2; --line: #2a3634;
+    --kernel: #5cc4b8; --kernel-soft: #16302d; --user: #e4a65f; --user-soft: #33261a;
+    --good: #74c37a; --good-soft: #1a2e1c; --bad: #f08479; --bad-soft: #3a1d1a; --code-bg: #1c2625;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0e1413; --surface: #151d1c; --ink: #e2eae8; --muted: #94a5a2; --line: #2a3634;
+  --kernel: #5cc4b8; --kernel-soft: #16302d; --user: #e4a65f; --user-soft: #33261a;
+  --good: #74c37a; --good-soft: #1a2e1c; --bad: #f08479; --bad-soft: #3a1d1a; --code-bg: #1c2625;
+}
+
+* { box-sizing: border-box; }
+body {
+  background: var(--bg); color: var(--ink);
+  font: 16px/1.62 var(--f-body);
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+.wrap { max-width: 1120px; margin: 0 auto; padding-block: 40px 96px;
+  display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: 48px; }
+nav.toc { position: sticky; top: calc(env(safe-area-inset-top, 0px) + 24px); align-self: start;
+  font-size: 14px; display: flex; flex-direction: column; gap: 6px; }
+nav.toc .label { font: 600 12px var(--f-display); text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin-bottom: 4px; }
+nav.toc a { color: var(--muted); text-decoration: none; padding: 2px 0 2px 10px; border-left: 2px solid var(--line); }
+nav.toc a:hover, nav.toc a:focus-visible { color: var(--kernel); border-left-color: var(--kernel); }
+main { min-width: 0; }
+@media (max-width: 860px) { .wrap { grid-template-columns: 1fr; gap: 24px; } nav.toc { position: static; flex-direction: row; flex-wrap: wrap; gap: 6px 14px; } nav.toc .label { width: 100%; } nav.toc a { border-left: 0; padding: 0; } }
+
+header { margin-bottom: 40px; }
+.eyebrow { font: 600 12px var(--f-display); letter-spacing: .1em; text-transform: uppercase; color: var(--kernel); }
+h1 { font: 600 clamp(36px, 6vw, 54px)/1.05 var(--f-display); margin: 6px 0 14px; letter-spacing: -.01em; text-wrap: balance; }
+h2 { font: 600 30px/1.15 var(--f-display); margin: 0 0 8px; text-wrap: balance; }
+h3 { font: 600 20px/1.3 var(--f-display); margin: 30px 0 8px; text-wrap: balance; }
+.lede { font-size: 18px; color: var(--muted); max-width: 66ch; margin: 0; }
+section { padding-block: 40px; border-top: 1px solid var(--line); }
+section > .q { font: 600 13px var(--f-display); letter-spacing: .08em; text-transform: uppercase; color: var(--user); margin-bottom: 4px; }
+p, ul, ol { max-width: 68ch; }
+p { margin: 0 0 14px; }
+li { margin-bottom: 6px; }
+code, .mono { font-family: var(--f-mono); font-size: .88em; }
+:not(pre) > code { background: var(--code-bg); padding: 1px 5px; border-radius: 4px; }
+pre { background: var(--code-bg); padding: 14px 16px; border-radius: 6px; overflow-x: auto; font: 13.5px/1.55 var(--f-mono); max-width: 100%; margin: 0 0 16px; }
+a { color: var(--kernel); }
+.answer { background: var(--surface); border: 1px solid var(--line); border-left: 4px solid var(--kernel); padding: 14px 18px; border-radius: 4px; max-width: 72ch; margin: 18px 0; }
+.answer p:last-child { margin-bottom: 0; }
+.answer strong:first-child { color: var(--kernel); }
+
+.tablewrap { overflow-x: auto; margin: 0 0 18px; }
+table { border-collapse: collapse; font-size: 14px; min-width: 560px; width: 100%; background: var(--surface); }
+th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font: 600 12px var(--f-display); text-transform: uppercase; letter-spacing: .06em; color: var(--muted); background: var(--bg); }
+td code { white-space: nowrap; }
+
+figure { margin: 22px 0 26px; }
+.svgbox { background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 12px; overflow-x: auto; }
+.svgbox svg { display: block; width: 100%; height: auto; min-width: 640px; color: var(--ink); }
+figcaption { font-size: 14px; color: var(--muted); margin-top: 8px; max-width: 72ch; }
+svg text { font-family: var(--f-body); font-size: 12px; fill: currentColor; }
+svg .t-name { font-family: var(--f-mono); font-weight: 600; font-size: 13px; }
+svg .t-sub { font-size: 11px; fill: var(--muted); }
+svg .t-lbl { font-size: 11px; fill: var(--muted); paint-order: stroke; stroke: var(--surface); stroke-width: 4px; stroke-linejoin: round; }
+svg .t-k { fill: var(--kernel); }
+svg .t-u { fill: var(--user); }
+svg .box-k { fill: var(--kernel-soft); stroke: var(--kernel); stroke-width: 1.5; }
+svg .box-u { fill: var(--user-soft); stroke: var(--user); stroke-width: 1.5; }
+svg .box-m { fill: var(--surface); stroke: currentColor; stroke-width: 1.2; }
+svg .box-b { fill: var(--surface); stroke: var(--muted); stroke-width: 1.2; stroke-dasharray: 5 3; }
+svg .band { fill: var(--user-soft); stroke: none; }
+svg .ln { stroke: currentColor; stroke-width: 1.3; fill: none; }
+svg .ln-k { stroke: var(--kernel); stroke-width: 1.5; fill: none; }
+svg .ln-u { stroke: var(--user); stroke-width: 1.5; fill: none; }
+svg .ln-mute { stroke: var(--muted); stroke-width: 1; fill: none; }
+svg .ah { fill: currentColor; }
+svg .ah-k { fill: var(--kernel); }
+svg .ah-u { fill: var(--user); }
+
+.cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; margin: 16px 0; }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 14px 16px; }
+.card h4 { font: 600 15px var(--f-display); margin: 0 0 6px; }
+.card p { font-size: 14.5px; margin: 0; }
+.tag { display: inline-block; font: 600 11px var(--f-display); letter-spacing: .06em; text-transform: uppercase; padding: 2px 7px; border-radius: 3px; }
+.tag.yes { background: var(--good-soft); color: var(--good); }
+.tag.no { background: var(--bad-soft); color: var(--bad); }
+
+/* exam */
+.exam-bar { position: sticky; top: env(safe-area-inset-top, 0px); z-index: 5; background: var(--bg); padding-block: 10px; border-bottom: 1px solid var(--line); display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: center; margin-bottom: 18px; }
+.score { font: 600 18px var(--f-display); font-variant-numeric: tabular-nums; }
+.meter { flex: 1 1 160px; height: 8px; background: var(--line); border-radius: 4px; overflow: hidden; min-width: 120px; }
+.meter > span { display: block; height: 100%; width: 0; background: var(--kernel); transition: width .3s; }
+button { font: 600 14px var(--f-body); border-radius: 5px; cursor: pointer; }
+.btn { background: var(--surface); color: var(--ink); border: 1px solid var(--line); padding: 6px 12px; }
+.btn:hover { border-color: var(--kernel); }
+button:focus-visible { outline: 2px solid var(--kernel); outline-offset: 2px; }
+.qcard { background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 18px 18px 14px; margin-bottom: 16px; max-width: 78ch; }
+.qhead { display: flex; gap: 10px; align-items: baseline; margin-bottom: 8px; }
+.qnum { font: 600 13px var(--f-mono); color: var(--muted); font-variant-numeric: tabular-nums; }
+.qtopic { font: 600 11px var(--f-display); letter-spacing: .07em; text-transform: uppercase; color: var(--user); }
+.qtext { margin: 0 0 12px; font-weight: 600; }
+.opts { display: flex; flex-direction: column; gap: 8px; }
+.opt { text-align: left; font-weight: 400; background: var(--bg); color: var(--ink); border: 1px solid var(--line); padding: 9px 12px; line-height: 1.45; }
+.opt:hover:not(:disabled) { border-color: var(--kernel); }
+.opt:disabled { cursor: default; }
+.opt.right { background: var(--good-soft); border-color: var(--good); }
+.opt.wrong { background: var(--bad-soft); border-color: var(--bad); }
+.opt .mark { font-weight: 600; margin-right: 6px; }
+.explain { margin-top: 12px; padding: 10px 12px; border-radius: 4px; background: var(--code-bg); font-size: 14.5px; }
+.explain b { color: var(--kernel); }
+textarea { width: 100%; min-height: 110px; font: 14.5px/1.5 var(--f-body); padding: 10px; border: 1px solid var(--line); border-radius: 5px; background: var(--bg); color: var(--ink); resize: vertical; }
+textarea:focus-visible { outline: 2px solid var(--kernel); outline-offset: 1px; }
+.model { margin-top: 10px; padding: 12px 14px; border-left: 3px solid var(--kernel); background: var(--kernel-soft); font-size: 14.5px; border-radius: 0 4px 4px 0; }
+.model ul { margin: 6px 0 0; padding-left: 20px; }
+.result { padding: 14px 16px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); max-width: 78ch; }
+@media (prefers-reduced-motion: reduce) { .meter > span { transition: none; } }
+</style>
+
+<div class="wrap">
+<nav class="toc" aria-label="Contents">
+  <span class="label">Contents</span>
+  <a href="#picture">The three pieces</a>
+  <a href="#records">Records, chunks, scratch</a>
+  <a href="#flow">1 · Data through the maps</a>
+  <a href="#seq">2 · Seq &amp; merging</a>
+  <a href="#criu">3 · Detecting CRIU</a>
+  <a href="#threads">Threads at replay</a>
+  <a href="#ref">eBPF reference</a>
+  <a href="#exam">Exam</a>
+</nav>
+
+<main>
+<header>
+  <div class="eyebrow">~/ebpf-dev/syscall-rr · study guide</div>
+  <h1>Inside sysrr</h1>
+  <p class="lede">How the recorder moves data between kernel and user space, how the decoder rebuilds each syscall from its pieces, and how a CRIU checkpoint becomes a clean boundary in the log. Line numbers refer to <code>sysrr.bpf.c</code> and <code>sysrr.c</code>.</p>
+</header>
+
+<section id="picture">
+  <h2>The three pieces</h2>
+  <p>Everything in sysrr is one of three things. <strong>Programs</strong> are small functions the kernel runs when an event fires: <code>sys_enter</code>, <code>sys_exit</code> and <code>on_fork</code>. <strong>Maps</strong> are memory that the programs and user space can both reach. <strong>The loader</strong>, <code>sysrr.c</code>, creates the maps, hands the programs to the kernel, and then reads results out of the maps.</p>
+  <p>Programs can't call each other across events, and they keep no variables between runs. Any information that has to survive from one event to the next, or reach user space, goes through a map. Global variables in a BPF program are maps too. That's why <code>bpftool map show</code> lists <code>.rodata</code> and <code>.bss</code> next to the maps you declared.</p>
+</section>
+
+<section id="records">
+  <div class="q">Follow-up questions</div>
+  <h2>Records, chunks and scratch</h2>
+  <p>A <strong>record</strong> (<code>REC_*</code>) is the unit everything is made of. The BPF side writes records into the ring buffer, <code>sysrr.c</code> copies them into the file unchanged, and <code>sysrr_dump</code> reads them back. Every record starts with the same 16-byte header (<code>sysrr.h:58</code>): <code>type</code> says which kind it is, <code>len</code> is the full size so a reader can skip it, and <code>seq</code> ties the records of one syscall together.</p>
+<pre>struct rec_hdr { u16 type; u16 flags; u32 len; u64 seq; };
+
+file = [file hdr][DATA][SYSCALL][SYSCALL][DATA][DATA][DATA][SYSCALL][MARKER] ... [STATS]</pre>
+  <div class="tablewrap"><table>
+    <thead><tr><th>Type</th><th>Size</th><th>What it is</th></tr></thead>
+    <tbody>
+      <tr><td><code>REC_SYSCALL</code></td><td>120 B, fixed</td><td>One syscall: nr, args, ret, timestamps, tids, gen, <code>ndata</code>. Numbers and pointers only, never buffer contents.</td></tr>
+      <tr><td><code>REC_DATA</code></td><td>32 B header + up to 16 KiB</td><td>One chunk of user memory the syscall read or wrote. <code>arg</code>, <code>idx</code> and <code>offset</code> say where the bytes belong.</td></tr>
+      <tr><td><code>REC_MARKER</code></td><td>fixed</td><td>A CRIU event: seize, detach, new generation. Not a syscall.</td></tr>
+      <tr><td><code>REC_STATS</code></td><td>fixed</td><td>Written once by user space at the end: totals and lost count.</td></tr>
+    </tbody>
+  </table></div>
+  <p>A <strong>chunk</strong> is the part of one user buffer that fits in a single <code>REC_DATA</code>: at most <code>CHUNK_MAX</code> = 16 KiB. A bigger buffer is split into several chunks, at most <code>CHUNKS_MAX</code> = 64 (1 MiB). Anything beyond that isn't copied, and the syscall gets <code>F_TRUNC</code>.</p>
+
+  <h3>Why one syscall becomes DATA, DATA, …, SYSCALL</h3>
+<pre>getpid()                    → SYSCALL                               (no memory involved)
+openat(AT_FDCWD, "/etc/x")  → DATA(D_STR path)  SYSCALL
+fstat(3, &amp;st)               → DATA(D_OUT struct stat)  SYSCALL
+read(3, buf, 40000) = 40000 → DATA off=0     len=16384
+                              DATA off=16384 len=16384
+                              DATA off=32768 len=7232
+                              SYSCALL ndata=3
+readv(3, iov, 2)            → DATA idx=0 …  DATA idx=1 …  SYSCALL</pre>
+  <div class="cols">
+    <div class="card"><h4>The number and size of buffers vary</h4><p>Zero buffers (<code>getpid</code>), one (<code>read</code>), N (<code>readv</code>), or several kinds (<code>recvmsg</code>: address + iovecs + control). No single C struct describes all of those; a fixed header plus self-describing pieces does.</p></div>
+    <div class="card"><h4>BPF can't build one big variable record</h4><p><code>reserve</code> needs a constant size, the stack is 512 bytes, a per-CPU map value is at most 32 KiB. So a large buffer is copied 16 KiB at a time in a <code>bpf_loop</code>. Chunks exist because of these limits, not because the format needed them.</p></div>
+    <div class="card"><h4>SYSCALL goes last: it's the commit</h4><p>It carries what's only known after the data is out: <code>ndata</code>, and <code>F_TRUNC</code> / <code>F_FAULT</code> / <code>F_LOST</code>. The decoder checks "I have <code>ndata</code> pieces". DATA without a SYSCALL becomes "orphan", never attached to the wrong syscall.</p></div>
+  </div>
+  <p>A side benefit: most syscalls (<code>close</code>, <code>futex</code>, <code>getpid</code>) produce no DATA and cost a single 120-byte record. A format that reserved room for the largest buffer would spend kilobytes on every <code>close()</code>.</p>
+
+  <h3>When each buffer is copied: entry or exit</h3>
+  <p>A buffer is copied at the moment it's known to hold what the kernel uses. That depends on its direction:</p>
+  <div class="tablewrap"><table>
+    <thead><tr><th>Direction</th><th>Examples</th><th>Copied at</th><th>Why</th></tr></thead>
+    <tbody>
+      <tr><td><code>D_OUT</code>, kernel writes</td><td><code>read</code> buf, <code>struct stat</code>, timespec, random bytes</td><td><code>sys_exit</code></td><td>Before the syscall the buffer holds garbage, and only <code>ret</code> says how many bytes are valid.</td></tr>
+      <tr><td><code>D_IN</code> / <code>D_STR</code>, kernel reads</td><td><code>write</code> data, paths, sockaddr, requested sleep time</td><td><code>sys_enter</code></td><td>The kernel copies most inputs right after entry, and the syscall may then block for a long time. Copying early leaves another thread the shortest window to change the buffer in between. <code>ret</code> isn't known yet, so the requested size is copied.</td></tr>
+      <tr><td>in/out</td><td><code>select</code> fd sets, <code>poll</code> revents, <code>accept</code> addrlen, <code>recvmsg</code> msghdr</td><td>both</td><td>The kernel overwrites the input with the result, so only the entry copy has what the program passed in.</td></tr>
+      <tr><td>execve path</td><td><code>execve</code>, <code>execveat</code></td><td><code>sys_enter</code> only</td><td>After a successful exec the old memory, path included, is gone.</td></tr>
+    </tbody>
+  </table></div>
+  <p><strong>Neither moment is exact under a race.</strong> The kernel doesn't freeze user memory during a syscall. It copies the buffer once, at a time of its choosing, and then uses only its own copy. If another thread changes the buffer, the entry copy can be wrong (the kernel copied later) and so can the exit copy (the kernel copied earlier). <code>tests/race_target.c</code> shows one of each:</p>
+<pre>write() to a full pipe   kernel copies late:  entry "AAAA…"  exit "BBBB…"   kernel took "BBBB…"  → entry copy wrong
+open() of a FIFO         kernel copies early: entry ".../fifo" exit ".../XXXX" kernel opened fifo  → exit copy wrong</pre>
+  <p><code>sysrr -r</code> copies every pure input a second time at <code>sys_exit</code> (flag <code>DF_EXIT</code>), and <code>sysrr_dump -r</code> lists the syscalls whose two copies differ. That catches a buffer changed <em>while a syscall used it</em>. It can't see races that never touch a syscall (most race bugs: shared counters, missing locks), a change that's undone before exit, or a change to an output buffer after the kernel filled it. It costs about 11% extra on the dd worst case.</p>
+  <p><strong>The price of copying at entry:</strong> the page may not be in memory yet, for example a string constant of a program that just started, and tracepoints can't fault pages in. When an entry copy fails, the input is copied again at <code>sys_exit</code>, after the kernel has touched the page. If the kernel never reads it either (a write to <code>/dev/null</code>), the record keeps <code>F_FAULT</code>.</p>
+
+  <h3>What scratch is for, and why only DATA goes through it</h3>
+  <p><code>scratch</code> is a per-CPU buffer the size of one <code>REC_DATA</code>: 32-byte header + 16 KiB (<code>sysrr.bpf.c:75</code>). It's where one chunk is assembled before it's copied into the ring. One chunk = one pass through <code>scratch</code> = one <code>REC_DATA</code>; a 40000-byte read reuses it three times.</p>
+  <figure>
+    <div class="svgbox">
+    <svg viewBox="0 0 860 250" role="img" aria-label="Two paths into the ring buffer: DATA chunks are read from user memory into the per-CPU scratch buffer, then copied into the ring with bpf_ringbuf_output; the fixed-size SYSCALL record is reserved directly in the ring, filled in place and submitted.">
+      <defs>
+        <marker id="a5" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah"/></marker>
+        <marker id="a5k" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah-k"/></marker>
+      </defs>
+      <text x="20" y="22" class="t-sub">DATA path (variable size n, 1…16384)</text>
+      <rect x="20" y="36" width="170" height="60" rx="4" class="box-u"/>
+      <text x="105" y="62" text-anchor="middle" class="t-name t-u">user buffer</text>
+      <text x="105" y="80" text-anchor="middle" class="t-sub">target's memory</text>
+
+      <rect x="330" y="36" width="200" height="60" rx="4" class="box-k"/>
+      <text x="430" y="62" text-anchor="middle" class="t-name t-k">scratch (per-CPU)</text>
+      <text x="430" y="80" text-anchor="middle" class="t-sub">32 B header + ≤16 KiB</text>
+
+      <rect x="660" y="36" width="180" height="190" rx="4" class="box-k"/>
+      <text x="750" y="58" text-anchor="middle" class="t-name t-k">events ring</text>
+      <rect x="676" y="72" width="148" height="34" rx="3" class="box-m"/>
+      <text x="750" y="94" text-anchor="middle" class="t-sub">REC_DATA, 32+n B</text>
+      <rect x="676" y="172" width="148" height="34" rx="3" class="box-m"/>
+      <text x="750" y="194" text-anchor="middle" class="t-sub">REC_SYSCALL, 120 B</text>
+
+      <line x1="190" y1="66" x2="328" y2="66" class="ln" marker-end="url(#a5)"/>
+      <text x="259" y="58" text-anchor="middle" class="t-lbl">probe_read_user</text>
+      <line x1="530" y1="66" x2="674" y2="86" class="ln-k" marker-end="url(#a5k)"/>
+      <text x="600" y="62" text-anchor="middle" class="t-lbl">output(32+n): copy</text>
+
+      <text x="20" y="152" class="t-sub">SYSCALL path (fixed size)</text>
+      <rect x="330" y="160" width="200" height="60" rx="4" class="box-m"/>
+      <text x="430" y="186" text-anchor="middle" class="t-name">tstate + regs + ret</text>
+      <text x="430" y="204" text-anchor="middle" class="t-sub">a few fixed fields</text>
+      <line x1="530" y1="189" x2="674" y2="189" class="ln-k" marker-end="url(#a5k)"/>
+      <text x="602" y="181" text-anchor="middle" class="t-lbl">reserve(120), fill, submit</text>
+    </svg>
+    </div>
+    <figcaption>Fixed-size records are written straight into ring memory with no copy (sysrr.bpf.c:466–487). Variable-size ones are built in scratch, then copied in (sysrr.bpf.c:145–169).</figcaption>
+  </figure>
+  <p>The split comes from one rule: <strong><code>bpf_ringbuf_reserve</code> only accepts a size the verifier sees as a constant.</strong> A SYSCALL record is always 120 bytes, so it can be reserved and filled in place. A chunk's size is only known at runtime. Always reserving 16 KiB would work, but a 1-byte <code>read</code> would then eat 16 KiB of ring: the dd benchmark's 2M one-byte reads would overflow the 64 MiB ring almost immediately. <code>bpf_ringbuf_output(ptr, n)</code> takes a variable size, but it copies from memory that already holds the finished record, header in front. That memory can't be the user buffer (output needs kernel memory and a header) and can't be the stack (512 bytes). It has to be a map value, and per-CPU is the cheapest safe one: no locks, and safe because the syscall tracepoints run with preemption disabled. The price is one extra copy of at most 16 KiB.</p>
+  <div class="answer">
+    <p><strong>In one sentence:</strong> SYSCALL = what was called and what came back; DATA = the bytes that crossed the user/kernel boundary, in ≤16 KiB chunks staged in <code>scratch</code> because their size is only known at runtime; same <code>seq</code> = same syscall, and the SYSCALL arrives last to close the group.</p>
+  </div>
+</section>
+
+<section id="flow">
+  <div class="q">Your question 1</div>
+  <h2>How data flows around the maps</h2>
+  <p>Follow the arrows below. Amber is user space, teal is BPF programs running in the kernel, and the white boxes in the middle are the maps they share. Every arrow is a real read or write in the code.</p>
+
+  <figure>
+    <div class="svgbox">
+    <svg viewBox="0 0 860 500" role="img" aria-label="Data flow: sysrr.c configures .rodata and seeds targets before load; sys_enter writes per-thread state to tstate, which sys_exit reads; sys_enter stages input buffers and sys_exit output buffers in scratch and writes records to the events ring buffer, which sysrr.c polls; handle_ptrace updates .bss and the target's tstate; on_fork adds to targets; lost is summed by sysrr.c at exit.">
+      <defs>
+        <marker id="a1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah"/></marker>
+        <marker id="a1k" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah-k"/></marker>
+        <marker id="a1u" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah-u"/></marker>
+      </defs>
+      <!-- column headings -->
+      <text x="110" y="24" text-anchor="middle" class="t-u" style="font-weight:600">USER SPACE</text>
+      <text x="430" y="24" text-anchor="middle" style="font-weight:600">MAPS (shared memory)</text>
+      <text x="750" y="24" text-anchor="middle" class="t-k" style="font-weight:600">BPF PROGRAMS (kernel)</text>
+
+      <!-- user space -->
+      <rect x="20" y="40" width="180" height="428" rx="6" class="box-u"/>
+      <text x="110" y="250" text-anchor="middle" class="t-name t-u">sysrr.c</text>
+      <text x="110" y="268" text-anchor="middle" class="t-sub">loader + consumer</text>
+      <text x="110" y="440" text-anchor="middle" class="t-sub">fwrite() → rec.log</text>
+
+      <!-- maps -->
+      <rect x="330" y="40" width="200" height="44" rx="4" class="box-m"/>
+      <text x="430" y="58" text-anchor="middle" class="t-name">.rodata</text>
+      <text x="430" y="75" text-anchor="middle" class="t-sub">config, constant for all progs</text>
+
+      <rect x="330" y="104" width="200" height="44" rx="4" class="box-m"/>
+      <text x="430" y="122" text-anchor="middle" class="t-name">targets</text>
+      <text x="430" y="139" text-anchor="middle" class="t-sub">HASH · tgids (only with -f)</text>
+
+      <rect x="330" y="168" width="200" height="44" rx="4" class="box-m"/>
+      <text x="430" y="186" text-anchor="middle" class="t-name">.bss</text>
+      <text x="430" y="203" text-anchor="middle" class="t-sub">seq_ctr · gen · seized_cnt</text>
+
+      <rect x="330" y="232" width="200" height="44" rx="4" class="box-m"/>
+      <text x="430" y="250" text-anchor="middle" class="t-name">tstate</text>
+      <text x="430" y="267" text-anchor="middle" class="t-sub">TASK_STORAGE · one per thread</text>
+
+      <rect x="330" y="296" width="200" height="44" rx="4" class="box-m"/>
+      <text x="430" y="314" text-anchor="middle" class="t-name">scratch</text>
+      <text x="430" y="331" text-anchor="middle" class="t-sub">PERCPU_ARRAY · 16 KiB staging</text>
+
+      <rect x="330" y="360" width="200" height="44" rx="4" class="box-m"/>
+      <text x="430" y="378" text-anchor="middle" class="t-name">events</text>
+      <text x="430" y="395" text-anchor="middle" class="t-sub">RINGBUF · 64 MiB</text>
+
+      <rect x="330" y="424" width="200" height="44" rx="4" class="box-m"/>
+      <text x="430" y="442" text-anchor="middle" class="t-name">lost</text>
+      <text x="430" y="459" text-anchor="middle" class="t-sub">PERCPU_ARRAY · counter</text>
+
+      <!-- programs -->
+      <rect x="660" y="96" width="180" height="44" rx="4" class="box-k"/>
+      <text x="750" y="114" text-anchor="middle" class="t-name t-k">on_fork</text>
+      <text x="750" y="131" text-anchor="middle" class="t-sub">sched_process_fork</text>
+
+      <rect x="660" y="168" width="180" height="44" rx="4" class="box-k"/>
+      <text x="750" y="186" text-anchor="middle" class="t-name t-k">handle_ptrace</text>
+      <text x="750" y="203" text-anchor="middle" class="t-sub">part of sys_enter</text>
+
+      <rect x="660" y="240" width="180" height="44" rx="4" class="box-k"/>
+      <text x="750" y="258" text-anchor="middle" class="t-name t-k">sys_enter</text>
+      <text x="750" y="275" text-anchor="middle" class="t-sub">every syscall, every process</text>
+
+      <rect x="660" y="330" width="180" height="44" rx="4" class="box-k"/>
+      <text x="750" y="348" text-anchor="middle" class="t-name t-k">sys_exit</text>
+      <text x="750" y="365" text-anchor="middle" class="t-sub">every syscall, every process</text>
+
+      <!-- user <-> maps -->
+      <line x1="200" y1="62" x2="328" y2="62" class="ln-u" marker-end="url(#a1u)"/>
+      <text x="264" y="56" text-anchor="middle" class="t-lbl">sets, before load</text>
+      <line x1="200" y1="126" x2="328" y2="126" class="ln-u" marker-end="url(#a1u)"/>
+      <text x="264" y="120" text-anchor="middle" class="t-lbl">seeds target pid</text>
+      <line x1="330" y1="190" x2="202" y2="190" class="ln-u" marker-end="url(#a1u)"/>
+      <text x="264" y="184" text-anchor="middle" class="t-lbl">reads gen at exit</text>
+      <line x1="330" y1="382" x2="202" y2="382" class="ln-u" marker-end="url(#a1u)"/>
+      <text x="264" y="376" text-anchor="middle" class="t-lbl">poll every 10 ms</text>
+      <line x1="330" y1="446" x2="202" y2="446" class="ln-u" marker-end="url(#a1u)"/>
+      <text x="264" y="440" text-anchor="middle" class="t-lbl">summed at exit</text>
+
+      <!-- programs -> maps -->
+      <line x1="660" y1="118" x2="532" y2="126" class="ln-k" marker-end="url(#a1k)"/>
+      <text x="596" y="113" text-anchor="middle" class="t-lbl">adds child tgid</text>
+      <line x1="660" y1="186" x2="532" y2="186" class="ln-k" marker-end="url(#a1k)"/>
+      <text x="596" y="180" text-anchor="middle" class="t-lbl">seized_cnt, gen++</text>
+      <line x1="660" y1="204" x2="532" y2="244" class="ln-k" marker-end="url(#a1k)"/>
+      <text x="612" y="214" text-anchor="middle" class="t-lbl">seized flag</text>
+      <line x1="660" y1="262" x2="532" y2="262" class="ln-k" marker-end="url(#a1k)"/>
+      <text x="596" y="276" text-anchor="middle" class="t-lbl">seq, ts, args, gen</text>
+      <line x1="530" y1="272" x2="658" y2="336" class="ln-k" marker-end="url(#a1k)"/>
+      <text x="618" y="305" text-anchor="middle" class="t-lbl">read</text>
+      <line x1="660" y1="280" x2="532" y2="304" class="ln-k" marker-end="url(#a1k)"/>
+      <text x="552" y="314" text-anchor="middle" class="t-lbl">inputs</text>
+      <line x1="660" y1="350" x2="532" y2="320" class="ln-k" marker-end="url(#a1k)"/>
+      <text x="626" y="330" text-anchor="middle" class="t-lbl">outputs</text>
+      <line x1="430" y1="340" x2="430" y2="358" class="ln" marker-end="url(#a1)"/>
+      <text x="438" y="353" class="t-lbl">copied in</text>
+      <line x1="660" y1="362" x2="532" y2="380" class="ln-k" marker-end="url(#a1k)"/>
+      <text x="598" y="392" text-anchor="middle" class="t-lbl">DATA + SYSCALL</text>
+      <line x1="660" y1="370" x2="532" y2="442" class="ln-k" marker-end="url(#a1k)"/>
+      <text x="620" y="424" text-anchor="middle" class="t-lbl">ring full</text>
+
+      <!-- sys_enter calls handle_ptrace -->
+      <line x1="750" y1="240" x2="750" y2="214" class="ln-k" marker-end="url(#a1k)"/>
+      <text x="742" y="231" text-anchor="end" class="t-lbl">if nr == ptrace</text>
+    </svg>
+    </div>
+    <figcaption>Only three arrows touch user space while recording runs: the ring buffer being drained, plus two reads at shutdown. Everything else stays inside the kernel.</figcaption>
+  </figure>
+
+  <h3>The same flow, as a timeline</h3>
+  <div class="tablewrap"><table>
+    <thead><tr><th>When</th><th>Who</th><th>Map</th><th>What happens</th></tr></thead>
+    <tbody>
+      <tr><td>before load</td><td>sysrr.c</td><td><code>.rodata</code></td><td>Writes <code>target_tgid</code>, <code>follow</code>, <code>pidns_*</code>, <code>wake_thresh</code> (sysrr.c:146). Frozen at load; programs treat them as constants.</td></tr>
+      <tr><td>after load</td><td>sysrr.c</td><td><code>targets</code></td><td>With <code>-f</code>, inserts the starting pid (sysrr.c:160).</td></tr>
+      <tr><td>target forks</td><td>on_fork</td><td><code>targets</code></td><td>If the parent is a target, the child's tgid is added.</td></tr>
+      <tr><td>syscall entry</td><td>sys_enter</td><td><code>.bss</code>, <code>tstate</code></td><td><code>seq_ctr</code> is atomically incremented. That seq, the timestamp, the 6 argument registers and the current <code>gen</code> are stored in <strong>this thread's</strong> <code>tstate</code>. Then each buffer the kernel is about to <em>read</em> (write data, a path, a sockaddr) goes through <code>scratch</code> into <code>events</code> as a <code>REC_DATA</code>.</td></tr>
+      <tr><td>syscall exit</td><td>sys_exit</td><td><code>tstate</code> → <code>scratch</code> → <code>events</code></td><td>Reads the saved state. Each buffer the kernel <em>wrote</em> (read data, <code>struct stat</code>, a timespec) is copied into <code>scratch</code> one chunk at a time, then into <code>events</code> as a <code>REC_DATA</code>. With <code>-r</code>, the inputs are copied a second time. Finally a <code>REC_SYSCALL</code> is reserved directly in <code>events</code>.</td></tr>
+      <tr><td>ring full</td><td>any program</td><td><code>lost</code></td><td>Its own CPU's counter is incremented; the syscall record is flagged <code>F_LOST</code>.</td></tr>
+      <tr><td>criu calls ptrace</td><td>handle_ptrace</td><td><code>.bss</code>, <strong>target's</strong> <code>tstate</code></td><td>Sets or clears <code>seized</code> on the target thread, updates <code>seized_cnt</code>, and bumps <code>gen</code> when it reaches 0.</td></tr>
+      <tr><td>every 10 ms</td><td>sysrr.c</td><td><code>events</code></td><td><code>ring_buffer__poll()</code> calls <code>handle_rec()</code> once per record, which <code>fwrite</code>s it to the log.</td></tr>
+      <tr><td>Ctrl-C</td><td>sysrr.c</td><td><code>events</code>, <code>lost</code>, <code>.bss</code></td><td>Detaches, drains the ring, sums <code>lost</code> across CPUs, reads <code>gen</code>, appends <code>REC_STATS</code>.</td></tr>
+    </tbody>
+  </table></div>
+
+  <div class="answer">
+    <p><strong>In one sentence:</strong> config flows <em>down</em> through <code>.rodata</code> before anything runs; per-syscall state lives in <code>tstate</code> between entry and exit; captured memory is staged in <code>scratch</code>, then moves <em>up</em> through the ring buffer to user space and the file.</p>
+  </div>
+</section>
+
+<section id="seq">
+  <div class="q">Your question 2</div>
+  <h2>How sysrr_dump merges records by seq</h2>
+  <p>One syscall becomes several records: zero or more <code>REC_DATA</code> (one per chunk of captured memory) followed by one <code>REC_SYSCALL</code>. They all carry the same <code>seq</code>. The <code>REC_SYSCALL</code> comes last on purpose, so it can carry the final flags and the count <code>ndata</code>. It "commits" the syscall.</p>
+
+  <h3>Why the decoder can't rely on position</h3>
+  <p>All CPUs write into the same ring buffer. If the target has two threads on two CPUs, their records interleave. The ring keeps the order in which space was reserved, and nothing more.</p>
+
+  <figure>
+    <div class="svgbox">
+    <svg viewBox="0 0 860 270" role="img" aria-label="Ring buffer order with records from two threads interleaved; sysrr_dump parks DATA records and attaches them to the SYSCALL record with the same seq when it arrives.">
+      <defs>
+        <marker id="a2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah"/></marker>
+        <marker id="a2k" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah-k"/></marker>
+      </defs>
+      <text x="20" y="24" style="font-weight:600">ring buffer = file order →</text>
+      <text x="840" y="24" text-anchor="end" class="t-sub">teal: thread 101 on CPU 2 · dashed: thread 102 on CPU 5</text>
+
+      <rect x="20" y="40" width="130" height="56" rx="4" class="box-k"/>
+      <text x="85" y="63" text-anchor="middle" class="t-name">DATA s41</text>
+      <text x="85" y="82" text-anchor="middle" class="t-sub">read buf, chunk 0</text>
+      <rect x="158" y="40" width="130" height="56" rx="4" class="box-k"/>
+      <text x="223" y="63" text-anchor="middle" class="t-name">DATA s41</text>
+      <text x="223" y="82" text-anchor="middle" class="t-sub">read buf, chunk 1</text>
+      <rect x="296" y="40" width="130" height="56" rx="4" class="box-b"/>
+      <text x="361" y="63" text-anchor="middle" class="t-name">SYSCALL s57</text>
+      <text x="361" y="82" text-anchor="middle" class="t-sub">getpid, ndata=0</text>
+      <rect x="434" y="40" width="130" height="56" rx="4" class="box-k"/>
+      <text x="499" y="63" text-anchor="middle" class="t-name">SYSCALL s41</text>
+      <text x="499" y="82" text-anchor="middle" class="t-sub">read, ndata=2</text>
+      <rect x="572" y="40" width="130" height="56" rx="4" class="box-b"/>
+      <text x="637" y="63" text-anchor="middle" class="t-name">DATA s58</text>
+      <text x="637" y="82" text-anchor="middle" class="t-sub">write buf</text>
+      <rect x="710" y="40" width="130" height="56" rx="4" class="box-b"/>
+      <text x="775" y="63" text-anchor="middle" class="t-name">SYSCALL s58</text>
+      <text x="775" y="82" text-anchor="middle" class="t-sub">write, ndata=1</text>
+
+      <!-- parking lot -->
+      <rect x="20" y="176" width="406" height="56" rx="4" class="box-m"/>
+      <text x="223" y="199" text-anchor="middle" class="t-name">parked: s41 #0, s41 #1</text>
+      <text x="223" y="218" text-anchor="middle" class="t-sub">sysrr_dump's pending list (DATA waiting for its SYSCALL)</text>
+
+      <line x1="85" y1="96" x2="85" y2="174" class="ln" marker-end="url(#a2)"/>
+      <line x1="223" y1="96" x2="223" y2="174" class="ln" marker-end="url(#a2)"/>
+      <text x="154" y="140" text-anchor="middle" class="t-lbl">park</text>
+      <line x1="361" y1="96" x2="361" y2="150" class="ln-mute"/>
+      <text x="361" y="164" text-anchor="middle" class="t-lbl">nothing parked for s57: print now</text>
+      <path d="M499,96 L499,204 L428,204" class="ln-k" marker-end="url(#a2k)"/>
+      <text x="507" y="150" class="t-lbl">take every parked s41, print, check 2 = ndata</text>
+      <line x1="637" y1="96" x2="637" y2="130" class="ln-mute"/>
+      <text x="706" y="124" text-anchor="middle" class="t-lbl">s58 parks, then commits</text>
+    </svg>
+    </div>
+    <figcaption>Thread 102's <code>getpid</code> finished on another CPU while thread 101 was between its data chunks and its commit, so <code>SYSCALL s57</code> landed in the middle. Matching by seq makes that harmless.</figcaption>
+  </figure>
+
+  <h3>The decoder's algorithm (sysrr_dump.c)</h3>
+<pre>for each record in file order:
+    REC_DATA     → append to pending list           (don't print yet)
+    REC_SYSCALL  → print it
+                   take every pending DATA with the same seq, print them
+                   if count != ndata, or flags has LOST/FAULT/TRUNC → "incomplete"
+                   mark seq as seen in a bitmap
+at end:
+    leftover pending DATA          → "orphan data records"   (their SYSCALL was lost)
+    holes in the seq bitmap        → "missing seqs"          (a SYSCALL record never arrived)</pre>
+
+  <h3>Two ordering guarantees make this work</h3>
+  <div class="cols">
+    <div class="card"><h4>DATA always comes before its SYSCALL</h4><p>All of a syscall's records are written by the <em>same thread</em>, in order: inputs during its <code>sys_enter</code> run, then outputs and finally the SYSCALL during its <code>sys_exit</code> run. The ring hands out positions in the order they're requested, so earlier writes get earlier positions. The libbpf consumer also stops at any record that's reserved but not yet submitted, so it never skips ahead past one.</p></div>
+    <div class="card"><h4>Seq numbers are unique</h4><p><code>__sync_fetch_and_add(&amp;seq_ctr, 1)</code> is an atomic instruction. Two threads entering syscalls at the same moment on two CPUs always get different numbers.</p></div>
+  </div>
+  <p>Seq is assigned at <em>entry</em>, while records are written at <em>exit</em>. So in the file, seq numbers from different threads aren't in increasing order: a long <code>read</code> with seq 41 can commit after a quick syscall with seq 57. Within one thread they're always increasing. The decoder doesn't need sorted input; that's the point of the pending list.</p>
+
+  <h3>Where preemption actually matters</h3>
+  <p>Merging by seq doesn't depend on preemption at all. Preemption matters in two other places, which are easy to mix up:</p>
+  <div class="cols">
+    <div class="card"><h4><span class="tag yes">depends on it</span> the per-CPU scratch buffer</h4><p><code>chunk_cb</code> fills <code>scratch</code> and then copies it into the ring. If another run of the program could start on the same CPU between those two steps, it would overwrite the buffer halfway through. On this 6.12 kernel, syscall tracepoints run with preemption disabled, and BPF won't re-enter the same program on a CPU, so the buffer stays private to one run.</p></div>
+    <div class="card"><h4><span class="tag no">must not depend on it</span> state from entry to exit</h4><p>Between <code>sys_enter</code> and <code>sys_exit</code> a thread can sleep (a blocking <code>read</code>) and wake up on a different CPU. A per-CPU map would hand <code>sys_exit</code> the wrong CPU's data. That's why seq, args and gen live in <code>tstate</code>, which is attached to the <em>thread</em> and moves with it.</p></div>
+  </div>
+  <div class="answer">
+    <p><strong>Rule of thumb:</strong> per-CPU storage is safe for work that starts and finishes inside a single program run. Anything that must survive until a later event belongs to the thread (task storage) or is keyed by thread id.</p>
+  </div>
+  <p><strong>One quirk to know:</strong> if a thread is still blocked in a syscall when you stop recording, its seq was handed out but its <code>REC_SYSCALL</code> never gets written. If that syscall had inputs, their DATA records are already in the log; sysrr_dump sees they're newer than every committed syscall of that thread and reports them as "in flight at stop", not as orphans. If it had no inputs, nothing at all was written for it, and with several threads that shows up as a "missing seq" even though nothing was lost.</p>
+</section>
+
+<section id="criu">
+  <div class="q">Your question 3</div>
+  <h2>How CRIU is detected</h2>
+  <p>Not just "is the syscall ptrace". It's a chain of four checks, and the last one does most of the work: <em>is someone attaching to or detaching from one of our target's threads?</em></p>
+
+  <figure>
+    <div class="svgbox">
+    <svg viewBox="0 0 860 230" role="img" aria-label="Detection chain: on every syscall of any process, check nr equals ptrace, request is SEIZE, ATTACH or DETACH, the pid resolves to a task whose tgid is a target; only then update the seized state, the counter, the generation and emit a marker.">
+      <defs>
+        <marker id="a3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah"/></marker>
+        <marker id="a3k" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah-k"/></marker>
+      </defs>
+      <rect x="10" y="30" width="150" height="70" rx="4" class="box-m"/>
+      <text x="85" y="58" text-anchor="middle" style="font-weight:600">any process</text>
+      <text x="85" y="76" text-anchor="middle" class="t-sub">enters a syscall</text>
+
+      <rect x="180" y="30" width="150" height="70" rx="4" class="box-m"/>
+      <text x="255" y="58" text-anchor="middle" class="t-name">nr == ptrace?</text>
+      <text x="255" y="76" text-anchor="middle" class="t-sub">1 compare, line 496</text>
+
+      <rect x="350" y="30" width="150" height="70" rx="4" class="box-m"/>
+      <text x="425" y="52" text-anchor="middle" style="font-weight:600">request is</text>
+      <text x="425" y="70" text-anchor="middle" class="t-name">SEIZE / ATTACH</text>
+      <text x="425" y="88" text-anchor="middle" class="t-name">/ DETACH?</text>
+
+      <rect x="520" y="30" width="150" height="70" rx="4" class="box-m"/>
+      <text x="595" y="52" text-anchor="middle" class="t-name">bpf_task_from_pid</text>
+      <text x="595" y="70" text-anchor="middle" style="font-weight:600">task's tgid is</text>
+      <text x="595" y="88" text-anchor="middle" style="font-weight:600">a target?</text>
+
+      <rect x="690" y="30" width="160" height="70" rx="4" class="box-k"/>
+      <text x="770" y="52" text-anchor="middle" class="t-k" style="font-weight:600">update state</text>
+      <text x="770" y="70" text-anchor="middle" class="t-sub">seized flag, seized_cnt,</text>
+      <text x="770" y="88" text-anchor="middle" class="t-sub">gen, marker record</text>
+
+      <line x1="160" y1="65" x2="178" y2="65" class="ln" marker-end="url(#a3)"/>
+      <line x1="330" y1="65" x2="348" y2="65" class="ln" marker-end="url(#a3)"/>
+      <text x="339" y="58" text-anchor="middle" class="t-lbl">yes</text>
+      <line x1="500" y1="65" x2="518" y2="65" class="ln" marker-end="url(#a3)"/>
+      <text x="509" y="58" text-anchor="middle" class="t-lbl">yes</text>
+      <line x1="670" y1="65" x2="688" y2="65" class="ln-k" marker-end="url(#a3k)"/>
+      <text x="679" y="58" text-anchor="middle" class="t-lbl">yes</text>
+
+      <rect x="180" y="160" width="490" height="44" rx="4" class="box-b"/>
+      <text x="425" y="187" text-anchor="middle">not about our target → go on to the normal target filter</text>
+      <line x1="255" y1="100" x2="255" y2="158" class="ln-mute" marker-end="url(#a3)"/>
+      <text x="263" y="134" class="t-lbl">no (99.9% of syscalls)</text>
+      <line x1="425" y1="100" x2="425" y2="158" class="ln-mute" marker-end="url(#a3)"/>
+      <text x="433" y="134" class="t-lbl">no (PEEKDATA, GETREGS…)</text>
+      <line x1="595" y1="100" x2="595" y2="158" class="ln-mute" marker-end="url(#a3)"/>
+      <text x="603" y="134" class="t-lbl">no (gdb on another pid)</text>
+    </svg>
+    </div>
+    <figcaption>The check runs on the <em>caller's</em> syscall: the process calling ptrace is criu, not the target. That's why it sits above the target filter at sysrr.bpf.c:496. Otherwise criu's syscalls would be discarded before anyone looked at them.</figcaption>
+  </figure>
+
+  <h3>Why ptrace is the right signal</h3>
+  <ul>
+    <li><strong>CRIU can't avoid it.</strong> To dump registers and run its parasite code inside the target, CRIU must <code>PTRACE_SEIZE</code> every thread. The bpftrace experiment saw exactly one <code>SEIZE</code> (0x4206) and one <code>DETACH</code> (0x11) per thread.</li>
+    <li><strong>The pid argument is a thread id</strong>, possibly not the main thread. So the program looks the task up with <code>bpf_task_from_pid()</code> and compares the task's <code>tgid</code>. It must call <code>bpf_task_release()</code> on every path, or the verifier rejects the program.</li>
+    <li><strong>The flag is written into the target's storage, not criu's.</strong> <code>bpf_task_storage_get(&amp;tstate, t, …)</code> uses the task found by pid. Later, when the <em>target</em> makes a syscall, <code>sys_enter</code> sees <code>seized = 1</code> and tags it <code>F_DUMP</code>.</li>
+    <li><strong>The parasite can't be filtered any other way.</strong> Its syscalls really run in the target's threads, with the target's pid. Only "is this thread currently seized" tells them apart.</li>
+  </ul>
+
+  <h3>The counter that turns detaches into a generation</h3>
+  <p>A process with 3 threads gets 3 seizes and 3 detaches. <code>seized_cnt</code> counts how many target threads CRIU currently holds. Each <code>SEIZE</code> adds 1. Each <code>DETACH</code> subtracts 1, and only when the count reaches <strong>0</strong> does <code>gen</code> go up and a <code>NEW GENERATION</code> marker get written. So one checkpoint is one generation, however many threads there are.</p>
+
+  <h3>What it looked like in the real run</h3>
+  <figure>
+    <div class="svgbox">
+    <svg viewBox="0 0 860 200" role="img" aria-label="Timeline from the test run: clock_nanosleep interrupted at 1.921 s, SEIZE at 2.006 s, 356 parasite syscalls while seized, DETACH at 2.111 s, generation 1 begins with read at 2.1113 s.">
+      <rect x="379" y="60" width="336" height="50" class="band"/>
+      <text x="547" y="80" text-anchor="middle" class="t-u" style="font-weight:600">CRIU holds the thread</text>
+      <text x="547" y="98" text-anchor="middle" class="t-sub">356 syscalls tagged criu-parasite (#31–#386)</text>
+      <line x1="40" y1="130" x2="840" y2="130" class="ln"/>
+      <g class="t-sub">
+        <line x1="200" y1="126" x2="200" y2="134" class="ln"/><text x="200" y="150" text-anchor="middle" class="t-sub">1.95 s</text>
+        <line x1="360" y1="126" x2="360" y2="134" class="ln"/><text x="360" y="150" text-anchor="middle" class="t-sub">2.00 s</text>
+        <line x1="520" y1="126" x2="520" y2="134" class="ln"/><text x="520" y="150" text-anchor="middle" class="t-sub">2.05 s</text>
+        <line x1="680" y1="126" x2="680" y2="134" class="ln"/><text x="680" y="150" text-anchor="middle" class="t-sub">2.10 s</text>
+        <line x1="840" y1="126" x2="840" y2="134" class="ln"/><text x="840" y="150" text-anchor="middle" class="t-sub">2.15 s</text>
+      </g>
+      <line x1="107" y1="40" x2="107" y2="130" class="ln-mute"/>
+      <text x="107" y="34" text-anchor="middle" class="t-lbl">#30 clock_nanosleep = −516</text>
+      <line x1="379" y1="40" x2="379" y2="130" class="ln-u"/>
+      <text x="379" y="34" text-anchor="middle" class="t-lbl">SEIZE 2.006</text>
+      <line x1="715" y1="40" x2="715" y2="130" class="ln-u"/>
+      <text x="700" y="34" text-anchor="end" class="t-lbl">DETACH 2.111 → gen 1</text>
+      <circle cx="716" cy="130" r="4" style="fill: var(--kernel)"/>
+      <text x="726" y="34" class="t-lbl">#387 read</text>
+      <text x="60" y="182" class="t-sub">gen 0 (before the checkpoint)</text>
+      <text x="840" y="182" text-anchor="end" class="t-k" style="font-weight:600">gen 1 = replay log</text>
+    </svg>
+    </div>
+    <figcaption>Drawn to scale from <code>/var/tmp/sysrr-test/rec.log</code>. The sleep that was interrupted gets <code>-EINTR</code> from CRIU, so generation 1 starts directly with the next <code>read</code>, in both the live process and a restored one.</figcaption>
+  </figure>
+
+  <h3>What it can't tell apart (yet)</h3>
+  <ul>
+    <li><strong>Any tracer counts.</strong> If gdb or strace attaches to the target, sysrr treats it like a checkpoint. One fix: in <code>handle_ptrace</code>, check <code>bpf_get_current_comm()</code> for <code>"criu"</code>.</li>
+    <li><strong>It trusts the request, not the result.</strong> The state changes when <code>ptrace()</code> is <em>entered</em>. A <code>SEIZE</code> that fails would still mark the thread seized. Checking the return value in criu's <code>sys_exit</code> would close this gap.</li>
+    <li><strong>A checkpoint without <code>--leave-running</code></strong> kills the target after the dump. You get the seizes but no detach, so there's no generation 1, and nothing after it to replay anyway.</li>
+  </ul>
+</section>
+
+<section id="threads">
+  <div class="q">Looking ahead to replay</div>
+  <h2>Multithreaded targets: the right result for the right thread</h2>
+  <p>Every <code>REC_SYSCALL</code> carries <code>tid</code> and <code>ns_tid</code>. Replay uses those, not <code>seq</code>, to decide which thread a record belongs to. It matches on <code>ns_tid</code>, the id inside the container, because CRIU restores those while host tids change on the new machine. The mixed stream is never replayed as one queue; it's first split into <strong>one queue per thread</strong>:</p>
+<pre>log (seq order):   #10 T1 read   #11 T2 futex   #12 T1 write   #13 T2 read   #14 T1 close
+
+split by ns_tid:   T1: #10 read  → #12 write → #14 close
+                   T2: #11 futex → #13 read</pre>
+  <p>When restored thread T2 makes a syscall, the replayer takes the next entry from T2's queue only, checks the syscall number (and input data) matches, and injects the results. Within one thread order is guaranteed: a thread can't be in two syscalls at once, so its syscalls are in program order with increasing <code>seq</code>.</p>
+
+  <h3>What the order between threads affects</h3>
+  <div class="tablewrap"><table>
+    <thead><tr><th>Case</th><th>Per-thread queues enough?</th></tr></thead>
+    <tbody>
+      <tr><td>Threads exchange data only through syscalls (T1 writes a pipe, T2 reads it)</td><td><span class="tag yes">yes</span> T2's <code>read</code> is faked from the log, so it gets the same bytes whenever it runs.</td></tr>
+      <tr><td>Threads share memory and the outcome depends on who goes first (locks, atomics, races)</td><td><span class="tag no">no</span> T2 may reach a different state, ask for a different syscall, and the replay diverges.</td></tr>
+      <tr><td>Threads block on each other with <code>futex</code></td><td>Depends. Faking futex results can let a thread stop waiting too early and race ahead.</td></tr>
+    </tbody>
+  </table></div>
+  <p>The log gives two orders between threads: <code>seq</code> is a total order of syscall <em>entries</em> (global atomic counter), and ring order / <code>ts_exit</code> is the order of <em>exits</em>. A stricter replayer can enforce "T2 may not finish seq 13 until every seq below 13 has been replayed", which reproduces how threads interleaved at syscall boundaries. It can't reproduce races on plain memory between two syscalls: those never enter the kernel, so no syscall recorder sees them. That's what rr does, by running all threads on one core and recording exactly when the scheduler switched, using hardware counters.</p>
+  <div class="answer">
+    <p><strong>Three levels:</strong> (1) per-thread queues by <code>ns_tid</code> always give each thread its own results; (2) optionally enforce <code>seq</code> order to reproduce cross-thread syscall order; (3) shared-memory races are out of reach, so start with single-threaded or loosely coupled targets, and detect divergence (nr or input mismatch) and report it.</p>
+  </div>
+</section>
+
+<section id="ref">
+  <h2>eBPF reference for this code</h2>
+  <p>A compact version of the earlier walkthrough, to look things up.</p>
+
+  <h3>Loading: four steps</h3>
+  <div class="tablewrap"><table>
+    <thead><tr><th>Step</th><th>Code</th><th>What happens</th></tr></thead>
+    <tbody>
+      <tr><td>open</td><td><code>sysrr_bpf__open()</code> sysrr.c:141</td><td>Object parsed; nothing in the kernel yet.</td></tr>
+      <tr><td>configure</td><td><code>skel-&gt;rodata-&gt;…</code> sysrr.c:146–154</td><td>Set constants; resize the ring buffer.</td></tr>
+      <tr><td>load</td><td><code>sysrr_bpf__load()</code> sysrr.c:156</td><td>Maps created, <code>.rodata</code> frozen, <strong>verifier</strong> runs.</td></tr>
+      <tr><td>attach</td><td><code>sysrr_bpf__attach()</code> sysrr.c:198</td><td>Programs start firing.</td></tr>
+    </tbody>
+  </table></div>
+  <p><code>volatile const</code> globals go into <code>.rodata</code>. They can be changed until load, then the verifier treats them as known constants and drops code that can't run. <code>volatile</code> stops clang from baking in the source value 0. Plain globals go into <code>.bss</code> and stay writable.</p>
+
+  <h3>Program type: <code>tp_btf/sys_enter</code></h3>
+  <p>One raw tracepoint for <em>every</em> syscall, with typed (BTF) arguments: <code>struct pt_regs *regs, long id</code>. Typing is what lets you write <code>regs-&gt;di</code> directly. x86_64 syscall arguments: <code>di, si, dx, r10, r8, r9</code>. The return value at exit is <code>ret</code>; the syscall number is <code>regs-&gt;orig_ax</code>.</p>
+
+  <h3>Map types used</h3>
+  <div class="tablewrap"><table>
+    <thead><tr><th>Type</th><th>Map</th><th>Why</th></tr></thead>
+    <tbody>
+      <tr><td>RINGBUF</td><td><code>events</code></td><td>One buffer shared by all CPUs, ordered, one reader. <code>reserve/submit</code> for fixed-size records (no copy); <code>output</code> for variable-size ones (copies).</td></tr>
+      <tr><td>TASK_STORAGE</td><td><code>tstate</code></td><td>One struct per thread, freed when the thread exits, survives CPU migration. Can be reached for <em>another</em> task, which <code>handle_ptrace</code> relies on.</td></tr>
+      <tr><td>PERCPU_ARRAY</td><td><code>scratch</code>, <code>lost</code></td><td>A large buffer that doesn't fit the 512-byte stack; counters with no locking. Values are limited to 32 KiB, hence 16 KiB chunks.</td></tr>
+      <tr><td>HASH</td><td><code>targets</code></td><td>Set of tgids for <code>-f</code>.</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3>Helpers and kfuncs</h3>
+  <p><strong>Helpers</strong> are the stable API: <code>bpf_get_current_pid_tgid</code>, <code>bpf_probe_read_user</code> (non-faulting copy from user memory), <code>bpf_ringbuf_*</code>, <code>bpf_loop</code>, <code>bpf_get_ns_current_pid_tgid</code>. <strong>kfuncs</strong> are kernel functions declared with <code>__ksym</code>. <code>bpf_task_from_pid</code> returns a reference that the verifier forces you to release.</p>
+
+  <h3>Verifier rules that shaped the code</h3>
+  <div class="cols">
+    <div class="card"><h4>512-byte stack</h4><p>The 16 KiB chunk lives in <code>scratch</code>, not in a local array.</p></div>
+    <div class="card"><h4>Bounded sizes</h4><p><code>if (n &gt; CHUNK_MAX) n = CHUNK_MAX;</code> before every variable-length copy, or the program is rejected.</p></div>
+    <div class="card"><h4>Loop state</h4><p>A <code>bpf_loop</code> callback must not carry counters between iterations. Compute the offset from the index <code>i</code>, or the verifier explores every value separately (the 1M-instruction failure).</p></div>
+    <div class="card"><h4>Global functions</h4><p>Non-static <code>__noinline</code> functions are verified once, for any arguments, instead of at every call site. Limit: 5 arguments, hence the packed <code>tidk</code>.</p></div>
+    <div class="card"><h4>Atomics</h4><p><code>__sync_fetch_and_add</code> for shared globals. The versions that return the new value need <code>-mcpu=v3</code>.</p></div>
+    <div class="card"><h4>References</h4><p>Every acquired pointer (<code>bpf_task_from_pid</code>) must be released on every path; hence <code>goto out</code>.</p></div>
+  </div>
+
+  <h3>Ring buffer wakeups</h3>
+  <p>Flag <code>0</code> wakes the reader whenever it has caught up, and a fast reader is always caught up, so that meant one wakeup per syscall. sysrr uses <code>BPF_RB_NO_WAKEUP</code> until the ring is ¼ full and lets the reader poll every 10 ms. Markers use <code>BPF_RB_FORCE_WAKEUP</code>. This change took the dd slowdown from 5.6× to 2.9×.</p>
+</section>
+
+<section id="exam">
+  <h2>Exam</h2>
+  <p>17 multiple-choice questions, then 3 to answer in your own words. Each answer shows the explanation right away. Aim for 14 or more correct before moving on to replay; a wrong answer points at the section to re-read. Your answers are kept in this browser, and also saved privately to your account so Claude can review them when you ask.</p>
+
+  <div class="exam-bar">
+    <span class="score" id="score">0 / 17</span>
+    <div class="meter" aria-hidden="true"><span id="meter"></span></div>
+    <span id="answered" class="mono" style="color:var(--muted);font-size:13px">0 answered</span>
+    <button class="btn" id="reset" type="button">Start over</button>
+    <span id="sync" class="mono" style="color:var(--muted);font-size:12px"></span>
+  </div>
+
+  <div id="quiz"></div>
+  <h3>In your own words</h3>
+  <p>Write an answer before revealing the model answer. If yours covers the bullet points, you've got it.</p>
+  <div id="open"></div>
+  <div class="result" id="result" hidden></div>
+</section>
+</main>
+</div>
+
+<script>
+const Q = [
+ { t: "Loading", q: "Why does sysrr.c set skel->rodata->target_tgid after open() but before load()?",
+   o: ["After load, .rodata is frozen and the verifier has already used the value as a constant",
+       "libbpf deletes .rodata once the programs are loaded",
+       "Only the BPF program itself may write .rodata after load",
+       "target_tgid is stored in .bss, which only exists before load"],
+   a: 0, e: "At load, libbpf freezes the .rodata map, and the verifier treats its values as known constants. That's how follow=0 removes the targets hash lookup from the loaded code. Change it after load and nothing would notice." },
+ { t: "Data flow", q: "A target thread enters read() on CPU 3, blocks, and wakes up on CPU 7. Where does sys_exit find the seq and args saved at entry?",
+   o: ["In a per-CPU array slot for CPU 3",
+       "In tstate, the task storage attached to that thread",
+       "In the ring buffer, from the record written at entry",
+       "Nowhere: sys_exit reads them from registers and allocates a new seq"],
+   a: 1, e: "Task storage is attached to the thread's task_struct and moves with it. A per-CPU slot would hand sys_exit CPU 7's data. At entry only DATA records of input buffers are written to the ring; seq and args stay in tstate." },
+ { t: "Data flow", q: "Why is the 16 KiB staging buffer (scratch) a PERCPU_ARRAY rather than a local array?",
+   o: ["BPF programs get a 512-byte stack, and a per-CPU slot is private to the one program run on that CPU",
+       "Helpers refuse pointers to the stack",
+       "User space reads PERCPU_ARRAY maps faster",
+       "bpf_ringbuf_output only accepts map memory"],
+   a: 0, e: "16 KiB doesn't fit the 512-byte stack. The per-CPU slot is safe because syscall tracepoints run with preemption disabled here, and BPF doesn't re-enter the same program on a CPU." },
+ { t: "Data flow", q: "Which map does user space read continuously while the target is running?",
+   o: [".bss, to see the latest seq", "tstate", "events (the ring buffer)", "lost"],
+   a: 2, e: "Only the ring buffer is drained during recording (ring_buffer__poll every 10 ms). lost and gen (.bss) are read once at shutdown. tstate is never read by user space." },
+ { t: "Merging", q: "The file contains, in order: DATA seq 41 (tid 101), SYSCALL seq 57 (tid 102), SYSCALL seq 41 (tid 101). What does this mean?",
+   o: ["Records were reordered by preemption, so the log is corrupt",
+       "Nothing is wrong: thread 102 committed in between, and the decoder matches DATA to SYSCALL by seq",
+       "Seqs 42 to 56 were lost",
+       "sysrr_dump will sort the file by seq first, so order doesn't matter"],
+   a: 1, e: "Two threads share one ring, so their records interleave. sysrr_dump parks DATA records until the SYSCALL record with the same seq arrives. It reads in file order and never sorts." },
+ { t: "Merging", q: "Why does a syscall's DATA always appear before its own SYSCALL record?",
+   o: ["The ring buffer sorts records by type",
+       "The same thread writes them in that order (inputs at entry, outputs and the SYSCALL at exit), and the ring gives out positions in the order they're requested",
+       "Because preemption is disabled",
+       "The consumer moves DATA records forward"],
+   a: 1, e: "Program order within one thread plus reservation order in the ring. The consumer also stops at a reserved-but-unsubmitted record, so it never skips ahead past one." },
+ { t: "Merging", q: "Which of these depends on preemption being disabled?",
+   o: ["DATA records preceding their SYSCALL record",
+       "Seq numbers being unique",
+       "Nothing overwriting scratch between filling it and copying it into the ring",
+       "sys_exit running on the same CPU as sys_enter"],
+   a: 2, e: "Ordering comes from the ring, and uniqueness comes from the atomic increment. sys_exit can run on a different CPU, which is why tstate exists. Only the per-CPU scratch buffer relies on no other run starting on the same CPU." },
+ { t: "Merging", q: "Why is seq_ctr incremented with __sync_fetch_and_add instead of seq_ctr++?",
+   o: ["The program runs on many CPUs at once; two threads of the target could otherwise get the same seq",
+       "The verifier rejects ++ on global variables",
+       "It makes the value visible to user space",
+       "seq_ctr lives in .rodata"],
+   a: 0, e: "++ is load, add, store. Two CPUs can both load 41 and both store 42. The atomic instruction makes the read-modify-write one step." },
+ { t: "Ring buffer", q: "Why does emit_syscall use bpf_ringbuf_reserve/submit, while the data chunks use bpf_ringbuf_output?",
+   o: ["reserve needs a size known at load time; chunks vary in length, and output accepts a bounded variable size",
+       "output is faster for small records",
+       "reserve can't be used inside a global function",
+       "Data records must not trigger a wakeup"],
+   a: 0, e: "The verifier requires a constant size for reserve. rec_syscall is fixed-size, so it's written directly into the ring with no copy. Chunks are 1 to 16384 bytes, so they're built in scratch and copied by output." },
+ { t: "Ring buffer", q: "You change wake_flags() to always return 0 (the default) and run bench_overhead.sh. What do you expect?",
+   o: ["Many lost records",
+       "No measurable change",
+       "Much slower again: the reader is woken for almost every record",
+       "The reader is never woken and the log stays empty"],
+   a: 2, e: "With flag 0 the kernel wakes the reader whenever it has caught up, and a fast reader always has. That's a wakeup per syscall, which was most of raw_sysrr's 5.6× slowdown." },
+ { t: "Verifier", q: "The first chunk_cb did x->off += n and failed with 'processed 1000001 insns'. Why?",
+   o: ["bpf_loop allows at most 8 iterations",
+       "The verifier tracked off's exact value, so each iteration looked like a new state to explore",
+       "bpf_probe_read_user can't read 16 KiB",
+       "Global functions can't call bpf_loop"],
+   a: 1, e: "Off was 0, then 16384, then 32768… all different known constants, so nothing could be pruned. Computing off = i * CHUNK_MAX from the loop index (an unknown value to the verifier) collapses them into one state." },
+ { t: "Verifier", q: "Why is emit_buf a non-static __noinline function?",
+   o: ["Static functions can't use maps",
+       "It's verified once for any arguments instead of at each of its ~70 call sites; the cost is a 5-argument limit",
+       "So user space can call it",
+       "Non-static functions run faster"],
+   a: 1, e: "Global functions are checked on their own (\"safe for any args that match its prototype\" in the load log). The 5-register limit is why emit_iov packs tid/arg/kind into one u64." },
+ { t: "CRIU", q: "Why does sys_enter check for ptrace before the target filter (is_target)?",
+   o: ["It doesn't matter where the check is",
+       "The process calling ptrace is criu, not the target, so it would be filtered out first",
+       "It's faster that way",
+       "ptrace is only visible in the target's own sys_enter"],
+   a: 1, e: "The ptrace call is criu's syscall. Its tgid isn't a target, so after the filter the program would have already returned." },
+ { t: "CRIU", q: "criu calls ptrace(PTRACE_SEIZE, 13825). How does the program know 13825 belongs to the target?",
+   o: ["It compares 13825 with target_tgid",
+       "bpf_task_from_pid(13825) gives the task; its tgid is checked with is_target()",
+       "It reads /proc/13825/status",
+       "It checks that the caller's comm is criu"],
+   a: 1, e: "The pid argument is a thread id, often not the main thread, so comparing with target_tgid would miss it. The task lookup gives the tgid. The reference must then be released (bpf_task_release)." },
+ { t: "CRIU", q: "CRIU seizes all 3 threads of the target and has detached 2 of them so far. What is gen?",
+   o: ["Unchanged: it only increases when seized_cnt drops back to 0",
+       "Increased by 2",
+       "Increased by 1 at the first detach",
+       "Increased by 3 at the seizes"],
+   a: 0, e: "seized_cnt counts threads CRIU currently holds. One checkpoint = one generation, however many threads there are." },
+ { t: "CRIU", q: "While recording, you attach gdb to the target, step a bit, and detach. What does sysrr do?",
+   o: ["Nothing: it only recognizes criu",
+       "It treats it like a checkpoint: syscalls while attached are tagged criu-parasite, and gen increases at detach",
+       "gdb's attach fails because sysrr holds ptrace",
+       "The recorder exits"],
+   a: 1, e: "Detection means \"someone ptrace-attached our target\", not \"criu did\". sysrr doesn't use ptrace, so gdb attaches fine. Checking bpf_get_current_comm() in handle_ptrace would fix this false positive." },
+ { t: "CRIU", q: "At the checkpoint the target was in clock_nanosleep, which got −516 (ERESTART_RESTARTBLOCK). What's the first syscall of generation 1?",
+   o: ["restart_syscall",
+       "clock_nanosleep again with the same arguments",
+       "The syscall after the sleep: CRIU saves −EINTR, so the sleep simply ends",
+       "Undefined: it differs between the live and restored process"],
+   a: 2, e: "CRIU can't restore a restart block, so it saves the registers with −EINTR. The live process and a restored one both see the sleep interrupted and continue with the next syscall, the read in the test log." },
+];
+const OPEN = [
+ { q: "Trace one write(1, buf, 29) from the target: name every map touched, in order, and say what is written or read in each.",
+   m: ["sys_enter: .bss seq_ctr (atomic ++), then tstate gets seq, ts, args, gen, flags (F_DUMP if seized).",
+       "sys_enter: capture_enter picks IN(arg1, 29 bytes); scratch gets the 29 bytes via bpf_probe_read_user; events gets a REC_DATA via bpf_ringbuf_output; tstate.ndata = 1.",
+       "sys_exit: tstate read; write has no outputs; events gets the REC_SYSCALL via reserve/submit with ndata = 1. (With -r: a second IN copy, flagged DF_EXIT, first.)",
+       "(lost only if the ring was full.) sysrr.c polls events and writes both records to the file; sysrr_dump pairs them by seq later, offline."] },
+ { q: "A teammate suggests replacing tstate with a PERCPU_ARRAY keyed by 0 \"because it's faster\". Describe a concrete failure.",
+   m: ["Thread A enters read() on CPU 2 and blocks; its state is in CPU 2's slot.",
+       "Thread B (or any target thread) makes a syscall on CPU 2 and overwrites the slot.",
+       "A wakes on CPU 5: sys_exit reads CPU 5's slot, so wrong seq, args and gen. Data is attributed to the wrong syscall.",
+       "Per-CPU only works for state that starts and ends inside one program run."] },
+ { q: "How would you change handle_ptrace so that gdb or strace attaching to the target is not counted as a checkpoint? What would it still get wrong?",
+   m: ["Call bpf_get_current_comm() and only continue when the caller is \"criu\" (or check the caller's executable).",
+       "Still wrong: a failed SEIZE is counted, because state changes at sys_enter, before ptrace returns.",
+       "Fix for that: remember the request at criu's sys_enter and apply it in sys_exit only if ret == 0."] },
+];
+
+const KEY = "sysrr-exam-v1";
+let state = { picks: {}, open: {}, shown: {} };
+try { const s = JSON.parse(localStorage.getItem(KEY)); if (s && s.picks) state = s; } catch (_) {}
+// Answers also go to a private per-user db doc (data/users/<id>/exam) so Claude can read them for review.
+let remote = null, pushTimer = null;
+const syncMsg = t => { document.getElementById("sync").textContent = t; };
+const push = () => {
+  if (!remote) return;
+  clearTimeout(pushTimer);
+  pushTimer = setTimeout(() => {
+    remote.set({ picks: state.picks, open: state.open, updated: new Date().toISOString() })
+      .then(() => syncMsg("saved for review"), () => syncMsg("not synced"));
+  }, 1200);
+};
+const save = () => { try { localStorage.setItem(KEY, JSON.stringify(state)); } catch (_) {} push(); };
+(async () => {
+  try {
+    const [db, user] = await Promise.all([claude.use("db"), claude.use("user")]);
+    const id = db && user && await user.id();
+    if (!id) return;
+    remote = db.collection("data/users/" + id).doc("exam");
+    const snap = await remote.get();
+    const r = snap.exists ? snap.data() : null;
+    const localEmpty = !Object.keys(state.picks).length && !Object.values(state.open).some(Boolean);
+    if (r && localEmpty) {
+      state = { picks: r.picks || {}, open: r.open || {}, shown: state.shown };
+      try { localStorage.setItem(KEY, JSON.stringify(state)); } catch (_) {}
+      renderQuiz(); renderOpen(); updateScore();
+      syncMsg("saved for review");
+    } else if (!localEmpty && JSON.stringify([r && r.picks, r && r.open]) !== JSON.stringify([state.picks, state.open])) {
+      push();
+    } else if (r) {
+      syncMsg("saved for review");
+    }
+  } catch (_) { remote = null; }
+})();
+const esc = s => s.replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+const code = s => esc(s).replace(/\b(\w+\(\)|\w+->\w+|[a-z_]+_[a-z_]+|PTRACE_\w+|ERESTART_\w+|F_DUMP|seq_ctr\+\+)\b/g, "<code>$1</code>");
+
+function renderQuiz() {
+  const root = document.getElementById("quiz");
+  root.innerHTML = "";
+  Q.forEach((it, i) => {
+    const card = document.createElement("div");
+    card.className = "qcard";
+    card.innerHTML = `<div class="qhead"><span class="qnum">${String(i + 1).padStart(2, "0")}</span><span class="qtopic">${it.t}</span></div><p class="qtext">${code(it.q)}</p><div class="opts"></div>`;
+    const opts = card.querySelector(".opts");
+    const pick = state.picks[i];
+    it.o.forEach((txt, j) => {
+      const b = document.createElement("button");
+      b.type = "button"; b.className = "opt"; b.id = `q${i}o${j}`;
+      b.innerHTML = `<span class="mark">${"ABCD"[j]}</span>${code(txt)}`;
+      if (pick !== undefined) {
+        b.disabled = true;
+        if (j === it.a) b.classList.add("right");
+        else if (j === pick) b.classList.add("wrong");
+      }
+      b.addEventListener("click", () => { state.picks[i] = j; save(); renderQuiz(); updateScore(); });
+      opts.appendChild(b);
+    });
+    if (pick !== undefined) {
+      const ex = document.createElement("div");
+      ex.className = "explain";
+      ex.innerHTML = `<b>${pick === it.a ? "Correct." : "Not quite. Answer: " + "ABCD"[it.a] + "."}</b> ${code(it.e)}`;
+      card.appendChild(ex);
+    }
+    root.appendChild(card);
+  });
+}
+
+function renderOpen() {
+  const root = document.getElementById("open");
+  root.innerHTML = "";
+  OPEN.forEach((it, i) => {
+    const card = document.createElement("div");
+    card.className = "qcard";
+    card.innerHTML = `<div class="qhead"><span class="qnum">W${i + 1}</span><span class="qtopic">explain</span></div><p class="qtext">${code(it.q)}</p>`;
+    const ta = document.createElement("textarea");
+    ta.id = `open${i}`; ta.setAttribute("aria-label", `Your answer to question W${i + 1}`);
+    ta.value = state.open[i] || "";
+    ta.addEventListener("input", () => { state.open[i] = ta.value; save(); });
+    card.appendChild(ta);
+    const row = document.createElement("div");
+    row.style.marginTop = "10px";
+    const b = document.createElement("button");
+    b.type = "button"; b.className = "btn"; b.id = `show${i}`;
+    b.textContent = state.shown[i] ? "Hide model answer" : "Reveal model answer";
+    b.addEventListener("click", () => { state.shown[i] = !state.shown[i]; save(); renderOpen(); });
+    row.appendChild(b);
+    card.appendChild(row);
+    if (state.shown[i]) {
+      const m = document.createElement("div");
+      m.className = "model";
+      m.innerHTML = "<strong>A complete answer mentions:</strong><ul>" + it.m.map(x => `<li>${code(x)}</li>`).join("") + "</ul>";
+      card.appendChild(m);
+    }
+    root.appendChild(card);
+  });
+}
+
+function updateScore() {
+  const answered = Object.keys(state.picks).length;
+  const right = Object.entries(state.picks).filter(([i, p]) => Q[i].a === p).length;
+  document.getElementById("score").textContent = `${right} / ${Q.length}`;
+  document.getElementById("answered").textContent = `${answered} answered`;
+  document.getElementById("meter").style.width = (100 * right / Q.length) + "%";
+  const res = document.getElementById("result");
+  if (answered === Q.length) {
+    const weak = [...new Set(Q.map((q, i) => state.picks[i] !== q.a ? q.t : null).filter(Boolean))];
+    const where = { "Loading": "#ref", "Data flow": "#flow", "Merging": "#seq", "Ring buffer": "#ref", "Verifier": "#ref", "CRIU": "#criu" };
+    res.hidden = false;
+    res.innerHTML = right >= 14
+      ? `<strong>${right} of ${Q.length}.</strong> You have the core model. ${weak.length ? "Review: " + weak.map(w => `<a href="${where[w]}">${w}</a>`).join(", ") + "." : "No weak topics."}`
+      : `<strong>${right} of ${Q.length}.</strong> Re-read ${weak.map(w => `<a href="${where[w]}">${w}</a>`).join(", ")}, then use Start over.`;
+  } else {
+    res.hidden = true;
+  }
+}
+
+document.getElementById("reset").addEventListener("click", () => { state = { picks: {}, open: state.open, shown: {} }; save(); renderQuiz(); renderOpen(); updateScore(); });
+renderQuiz(); renderOpen(); updateScore();
+</script>
+
+</body></html>

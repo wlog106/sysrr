@@ -1,0 +1,551 @@
+<title>Inside sysrr</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans+Condensed:wght@500;600&family=IBM+Plex+Sans:ital,wght@0,400;0,600;1,400&display=swap">
+<style>
+/* Layout: one reading column with a contents rail; every idea gets a short heading, a plain paragraph, and at most one table or flow.
+   Same token family as before: teal = kernel, amber = our tool, blue = the target. */
+:root {
+  --bg: #f3f5f4; --surface: #ffffff; --ink: #18201f; --muted: #586563; --line: #d3dbd9;
+  --kernel: #0b6f68; --kernel-soft: #e1f0ee; --user: #9a520c; --user-soft: #f7ebdc;
+  --target: #4b5bb0; --target-soft: #e6e9f7;
+  --good: #2d7a33; --good-soft: #e3f1e3; --bad: #b1261d; --bad-soft: #f8e3e1; --code-bg: #e9eeed;
+  --f-display: "IBM Plex Sans Condensed", "Arial Narrow", system-ui, sans-serif;
+  --f-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --f-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: #0e1413; --surface: #151d1c; --ink: #e2eae8; --muted: #94a5a2; --line: #2a3634;
+    --kernel: #5cc4b8; --kernel-soft: #16302d; --user: #e4a65f; --user-soft: #33261a;
+    --target: #97a5f0; --target-soft: #1e2340;
+    --good: #74c37a; --good-soft: #1a2e1c; --bad: #f08479; --bad-soft: #3a1d1a; --code-bg: #1c2625;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0e1413; --surface: #151d1c; --ink: #e2eae8; --muted: #94a5a2; --line: #2a3634;
+  --kernel: #5cc4b8; --kernel-soft: #16302d; --user: #e4a65f; --user-soft: #33261a;
+  --target: #97a5f0; --target-soft: #1e2340;
+  --good: #74c37a; --good-soft: #1a2e1c; --bad: #f08479; --bad-soft: #3a1d1a; --code-bg: #1c2625;
+}
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--ink); font: 17px/1.65 var(--f-body);
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+.wrap { max-width: 1040px; margin: 0 auto; padding-block: 40px 96px; display: grid; grid-template-columns: 180px minmax(0, 1fr); gap: 48px; }
+nav.toc { position: sticky; top: calc(env(safe-area-inset-top, 0px) + 24px); align-self: start; font-size: 14px; display: flex; flex-direction: column; gap: 6px; }
+nav.toc a { color: var(--muted); text-decoration: none; padding: 2px 0 2px 10px; border-left: 2px solid var(--line); }
+nav.toc a:hover, nav.toc a:focus-visible { color: var(--kernel); border-left-color: var(--kernel); }
+main { min-width: 0; }
+@media (max-width: 860px) { .wrap { grid-template-columns: 1fr; gap: 24px; } nav.toc { position: static; flex-direction: row; flex-wrap: wrap; gap: 6px 14px; } nav.toc a { border-left: 0; padding: 0; } }
+header { margin-bottom: 32px; }
+.eyebrow { font: 600 12px var(--f-display); letter-spacing: .1em; text-transform: uppercase; color: var(--kernel); }
+h1 { font: 600 clamp(36px, 6vw, 52px)/1.05 var(--f-display); margin: 6px 0 14px; letter-spacing: -.01em; text-wrap: balance; }
+h2 { font: 600 28px/1.15 var(--f-display); margin: 0 0 10px; text-wrap: balance; }
+h3 { font: 600 19px/1.3 var(--f-display); margin: 26px 0 8px; text-wrap: balance; }
+.lede { font-size: 19px; max-width: 62ch; margin: 0; }
+section { padding-block: 34px; border-top: 1px solid var(--line); }
+p, ul, ol { max-width: 66ch; }
+p { margin: 0 0 14px; }
+li { margin-bottom: 6px; }
+code, .mono { font-family: var(--f-mono); font-size: .88em; }
+:not(pre) > code { background: var(--code-bg); padding: 1px 5px; border-radius: 4px; }
+pre { background: var(--code-bg); padding: 14px 16px; border-radius: 6px; overflow-x: auto; font: 13.5px/1.55 var(--f-mono); max-width: 100%; margin: 0 0 16px; }
+pre .dim { color: var(--muted); }
+a { color: var(--kernel); }
+.key { background: var(--kernel-soft); padding: 14px 18px; border-radius: 6px; max-width: 68ch; margin: 18px 0; }
+.key p:last-child { margin-bottom: 0; }
+.tablewrap { overflow-x: auto; margin: 0 0 18px; }
+table { border-collapse: collapse; font-size: 15px; min-width: 520px; width: 100%; background: var(--surface); }
+th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font: 600 12px var(--f-display); text-transform: uppercase; letter-spacing: .06em; color: var(--muted); background: var(--bg); }
+.flow { list-style: none; counter-reset: s; padding: 0; margin: 16px 0 20px; max-width: 70ch; display: grid; gap: 8px; }
+.flow li { counter-increment: s; display: grid; grid-template-columns: 28px minmax(0, 1fr); gap: 12px; margin: 0; padding: 10px 14px; border-radius: 6px; background: var(--surface); border: 1px solid var(--line); }
+.flow li::before { content: counter(s); font: 600 14px/26px var(--f-mono); width: 26px; height: 26px; text-align: center; border-radius: 50%; background: var(--code-bg); color: var(--muted); }
+.flow li.k::before { background: var(--kernel-soft); color: var(--kernel); }
+.flow li.u::before { background: var(--user-soft); color: var(--user); }
+.flow li.t::before { background: var(--target-soft); color: var(--target); }
+.who { font: 600 12px var(--f-display); letter-spacing: .06em; text-transform: uppercase; color: var(--muted); display: block; }
+.cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; margin: 16px 0; }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 14px 16px; min-width: 0; }
+.card h3 { margin: 0 0 6px; font-size: 16px; }
+.card p { font-size: 15px; margin: 0; }
+.pill { display: inline-block; font: 600 11px var(--f-display); letter-spacing: .06em; text-transform: uppercase; padding: 2px 8px; border-radius: 999px; white-space: nowrap; }
+.pill.ok { background: var(--good-soft); color: var(--good); }
+.pill.no { background: var(--bad-soft); color: var(--bad); }
+.pill.run { background: var(--kernel-soft); color: var(--kernel); }
+.pill.fake { background: var(--user-soft); color: var(--user); }
+details.quiz { background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 12px 16px; margin: 0 0 10px; max-width: 72ch; }
+details.quiz summary { cursor: pointer; font-weight: 600; }
+details.quiz summary:focus-visible { outline: 2px solid var(--kernel); outline-offset: 3px; }
+details.quiz[open] summary { margin-bottom: 8px; }
+details.quiz p:last-child { margin-bottom: 0; }
+/* exam */
+.exam-bar { position: sticky; top: env(safe-area-inset-top, 0px); z-index: 5; background: var(--bg); padding-block: 10px; border-bottom: 1px solid var(--line); display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: center; margin-bottom: 18px; }
+.score { font: 600 18px var(--f-display); font-variant-numeric: tabular-nums; }
+.meter { flex: 1 1 160px; height: 8px; background: var(--line); border-radius: 4px; overflow: hidden; min-width: 120px; }
+.meter > span { display: block; height: 100%; width: 0; background: var(--kernel); transition: width .3s; }
+button { font: 600 14px var(--f-body); border-radius: 5px; cursor: pointer; }
+.btn { background: var(--surface); color: var(--ink); border: 1px solid var(--line); padding: 6px 12px; }
+.btn:hover { border-color: var(--kernel); }
+button:focus-visible { outline: 2px solid var(--kernel); outline-offset: 2px; }
+.qcard { background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 18px 18px 14px; margin-bottom: 16px; max-width: 78ch; }
+.qhead { display: flex; gap: 10px; align-items: baseline; margin-bottom: 8px; }
+.qnum { font: 600 13px var(--f-mono); color: var(--muted); font-variant-numeric: tabular-nums; }
+.qtopic { font: 600 11px var(--f-display); letter-spacing: .07em; text-transform: uppercase; color: var(--user); }
+.qtext { margin: 0 0 12px; font-weight: 600; }
+.opts { display: flex; flex-direction: column; gap: 8px; }
+.opt { text-align: left; font-weight: 400; background: var(--bg); color: var(--ink); border: 1px solid var(--line); padding: 9px 12px; line-height: 1.45; }
+.opt:hover:not(:disabled) { border-color: var(--kernel); }
+.opt:disabled { cursor: default; }
+.opt.right { background: var(--good-soft); border-color: var(--good); }
+.opt.wrong { background: var(--bad-soft); border-color: var(--bad); }
+.opt .mark { font-weight: 600; margin-right: 6px; }
+.explain { margin-top: 12px; padding: 10px 12px; border-radius: 4px; background: var(--code-bg); font-size: 14.5px; }
+.explain b { color: var(--kernel); }
+textarea { width: 100%; min-height: 110px; font: 14.5px/1.5 var(--f-body); padding: 10px; border: 1px solid var(--line); border-radius: 5px; background: var(--bg); color: var(--ink); resize: vertical; }
+textarea:focus-visible { outline: 2px solid var(--kernel); outline-offset: 1px; }
+.model { margin-top: 10px; padding: 12px 14px; border-left: 3px solid var(--kernel); background: var(--kernel-soft); font-size: 14.5px; border-radius: 0 4px 4px 0; }
+.model ul { margin: 6px 0 0; padding-left: 20px; }
+.result { padding: 14px 16px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); max-width: 78ch; }
+@media (prefers-reduced-motion: reduce) { .meter > span { transition: none; } }
+</style>
+
+<div class="wrap">
+<nav class="toc" aria-label="Contents">
+  <a href="#idea">The idea</a>
+  <a href="#records">The log</a>
+  <a href="#flow">One syscall</a>
+  <a href="#when">Which bytes, when</a>
+  <a href="#maps">Where data waits</a>
+  <a href="#seq">Rebuilding a syscall</a>
+  <a href="#criu">Spotting a checkpoint</a>
+  <a href="#threads">Threads and children</a>
+  <a href="#ref">eBPF rules</a>
+  <a href="#use">Commands</a>
+  <a href="#exam">Exam</a>
+</nav>
+
+<main>
+<header>
+  <div class="eyebrow">syscall-rr · record side</div>
+  <h1>Inside sysrr</h1>
+  <p class="lede">sysrr is a flight recorder for one container process. It writes down every syscall the process makes and every byte that goes in or out. Later, <a href="https://claude.ai/artifact/BrqbnVeMN3qqisG1nxenKb">sysrr_replay</a> uses that log to relive what happened.</p>
+</header>
+
+<section id="idea">
+  <h2>The idea</h2>
+  <p>A syscall is the only way a process talks to the outside world. If you know every answer the kernel gave, you know everything the process learned. So recording syscalls is enough to repeat its life later.</p>
+  <p>sysrr has three parts:</p>
+  <div class="cols">
+    <div class="card"><h3>Programs</h3><p>Small functions the kernel runs at each syscall entry and exit (<code>sysrr.bpf.c</code>).</p></div>
+    <div class="card"><h3>Maps</h3><p>Memory shared by those programs and user space. Programs keep nothing between runs, so everything goes here.</p></div>
+    <div class="card"><h3>The loader</h3><p><code>sysrr.c</code> loads the programs, then copies finished records into the log file.</p></div>
+  </div>
+</section>
+
+<section id="records">
+  <h2>The log is a list of records</h2>
+  <p>Every record starts with its type, its length and a number called <code>seq</code>. Records with the same <code>seq</code> belong to the same syscall.</p>
+  <div class="tablewrap"><table>
+    <thead><tr><th>Record</th><th>Holds</th><th>Example</th></tr></thead>
+    <tbody>
+      <tr><td><code>REC_SYSCALL</code></td><td>Which call, its arguments, its result. Always 120 bytes.</td><td><code>read(3, buf, 16) = 16</code></td></tr>
+      <tr><td><code>REC_DATA</code></td><td>Bytes from a buffer, up to 16 KiB per record.</td><td>the 16 bytes <code>read</code> returned</td></tr>
+      <tr><td><code>REC_MARKER</code></td><td>A checkpoint event.</td><td>CRIU attached, CRIU left</td></tr>
+      <tr><td><code>REC_STATS</code></td><td>Totals, written once at the end.</td><td>records lost: 0</td></tr>
+    </tbody>
+  </table></div>
+  <pre>getpid()                → SYSCALL
+open("/etc/x")          → DATA(path)  SYSCALL
+read(3, buf, 40000)     → DATA(16 KiB)  DATA(16 KiB)  DATA(7 KiB)  SYSCALL</pre>
+  <p>The <code>SYSCALL</code> record always comes last. It says how many <code>DATA</code> records to expect, so a damaged syscall can be detected.</p>
+</section>
+
+<section id="flow">
+  <h2>One syscall, start to finish</h2>
+  <p>Here is <code>write(1, buf, 29)</code>, step by step:</p>
+  <ol class="flow">
+    <li class="k"><div><span class="who">Entry</span>Take the next <code>seq</code> and save it with the arguments in <code>tstate</code>, this thread's private notes.</div></li>
+    <li class="k"><div><span class="who">Entry</span>Copy the 29 bytes to the <code>scratch</code> buffer, then into the <code>events</code> ring as a <code>REC_DATA</code>.</div></li>
+    <li class="t"><div><span class="who">The kernel</span>The real write runs. The thread may sleep and wake on another CPU.</div></li>
+    <li class="k"><div><span class="who">Exit</span>Read the notes back from <code>tstate</code> and write the <code>REC_SYSCALL</code> with the result.</div></li>
+    <li class="u"><div><span class="who">User space</span>Every 10 ms, <code>sysrr.c</code> empties the ring into the log file. It never looks inside.</div></li>
+  </ol>
+  <div class="key"><p><strong>In short:</strong> settings go down through <code>.rodata</code> before anything runs. Notes wait in <code>tstate</code> between entry and exit. Bytes pass through <code>scratch</code> and travel up through the ring to the file.</p></div>
+</section>
+
+<section id="when">
+  <h2>Which bytes, and when to copy them</h2>
+  <p>A buffer is copied at the moment it holds what matters:</p>
+  <div class="tablewrap"><table>
+    <thead><tr><th>Direction</th><th>Examples</th><th>Copied at</th><th>Why</th></tr></thead>
+    <tbody>
+      <tr><td>Kernel writes it</td><td><code>read</code> data, <code>stat</code> results, the time</td><td>Exit</td><td>It holds garbage until the call is done.</td></tr>
+      <tr><td>Kernel reads it</td><td><code>write</code> data, paths</td><td>Entry</td><td>The call might block for a long time, and the program could change it meanwhile.</td></tr>
+      <tr><td>Both</td><td><code>poll</code> lists, <code>recvmsg</code> header</td><td>Both</td><td>The result overwrites the input.</td></tr>
+    </tbody>
+  </table></div>
+  <p>A table in <code>sysrr.bpf.c</code> lists this for each syscall. On 2026-11-06, a new test found about 40 calls missing from it, including <code>statfs</code>, <code>getxattr</code>, <code>sendfile</code>, <code>recvmmsg</code> and timers. They are in now. Most <code>ioctl</code>s are covered too, because their number says which way the data goes and how big it is.</p>
+  <p><code>sysrr -r</code> copies each input a second time at exit and reports any buffer that changed during a call. That finds one kind of race only. It can't see most race bugs, because they never touch a syscall.</p>
+</section>
+
+<section id="maps">
+  <h2>Where data waits</h2>
+  <div class="tablewrap"><table>
+    <thead><tr><th>Map</th><th>Holds</th><th>Why this kind</th></tr></thead>
+    <tbody>
+      <tr><td><code>events</code></td><td>Finished records, on their way to the file</td><td>A ring buffer: one queue for all CPUs, in order.</td></tr>
+      <tr><td><code>tstate</code></td><td>Each thread's notes between entry and exit</td><td>Task storage moves with the thread if it changes CPU.</td></tr>
+      <tr><td><code>scratch</code></td><td>One chunk being assembled</td><td>16 KiB doesn't fit the 512-byte BPF stack. Each CPU has its own, and one run finishes before the next starts.</td></tr>
+      <tr><td><code>targets</code></td><td>Processes to record (with <code>-f</code>)</td><td>A hash set.</td></tr>
+      <tr><td><code>lost</code></td><td>Count of records that didn't fit</td><td>Per-CPU counters need no locks.</td></tr>
+      <tr><td><code>.rodata</code>, <code>.bss</code></td><td>Settings; and <code>seq_ctr</code>, <code>gen</code>, <code>seized_cnt</code></td><td>BPF global variables are maps too.</td></tr>
+    </tbody>
+  </table></div>
+  <p>Only <code>events</code> is read while recording runs. <code>lost</code> and <code>gen</code> are read once at the end.</p>
+</section>
+
+<section id="seq">
+  <h2>Putting a syscall back together</h2>
+  <p>All CPUs share one ring, so records of different threads get mixed:</p>
+  <pre>DATA #41   SYSCALL #57   SYSCALL #41
+           <span class="dim">^ another thread finished here</span></pre>
+  <p>That's fine. <code>sysrr_dump</code> holds <code>DATA</code> records aside until the <code>SYSCALL</code> with the same <code>seq</code> arrives. Two rules make this safe:</p>
+  <ul>
+    <li><strong>A syscall's DATA comes before its SYSCALL.</strong> One thread writes them in that order, and the ring keeps the order of requests.</li>
+    <li><strong>Each seq is unique.</strong> <code>__sync_fetch_and_add</code> makes taking a number one atomic step, even on many CPUs.</li>
+  </ul>
+  <p>Only <code>scratch</code> depends on preemption being off, because nothing may overwrite it halfway through a copy. The ordering rules above don't depend on it.</p>
+  <p>A thread still blocked in a syscall when you stop recording has a <code>seq</code> but no <code>SYSCALL</code> record. <code>sysrr_dump -s</code> reports that as a missing seq or as in flight, even though nothing was lost.</p>
+</section>
+
+<section id="criu">
+  <h2>Spotting a checkpoint</h2>
+  <p>To save a process, CRIU must attach to each of its threads with <code>ptrace</code>, and it can't avoid that. So sysrr watches for <code>ptrace</code> calls aimed at the target:</p>
+  <ol class="flow">
+    <li class="u"><div><span class="who">SEIZE</span>CRIU attaches. sysrr marks the thread as seized and adds 1 to <code>seized_cnt</code>.</div></li>
+    <li class="t"><div><span class="who">While seized</span>CRIU runs its own code inside the target. Those syscalls get the flag <code>F_DUMP</code>, so replay ignores them.</div></li>
+    <li class="u"><div><span class="who">DETACH</span>CRIU leaves. sysrr subtracts 1. At 0, <code>gen</code> goes up by one.</div></li>
+  </ol>
+  <p><strong>Generation N is everything after checkpoint N</strong>, which is exactly what a restore of that checkpoint must replay.</p>
+  <ul>
+    <li>The check sits before the target filter, because the process calling <code>ptrace</code> is CRIU, not the target.</li>
+    <li>The pid CRIU passes is a thread id, so sysrr looks up that thread's process with <code>bpf_task_from_pid</code>.</li>
+    <li>Any tracer counts: attaching gdb looks like a checkpoint too.</li>
+    <li>A sleep interrupted by the checkpoint gets <code>-EINTR</code> in both the live and the restored process, so both continue with the next syscall.</li>
+  </ul>
+</section>
+
+<section id="threads">
+  <h2>Threads and child processes</h2>
+  <p>Each record stores the thread's id inside the container (<code>ns_tid</code>). CRIU restores those ids, so replay can match each record to the right thread. Use <code>sysrr -f</code> if the target has child processes, or forks new ones.</p>
+  <p>A few records look odd but have a simple explanation:</p>
+  <div class="tablewrap"><table>
+    <thead><tr><th>In the log</th><th>What it means</th></tr></thead>
+    <tbody>
+      <tr><td><code>clone = 0</code>, flag <code>F_NOENTER</code></td><td>A new thread or process being born. It comes out of its parent's <code>clone</code> without ever entering it.</td></tr>
+      <tr><td><code>sysfs = -1</code>, flag <code>F_NOENTER</code></td><td>The container's seccomp profile refused the call. The kernel skips the entry event but still reports the exit.</td></tr>
+      <tr><td><code>rt_sigreturn</code></td><td>A signal handler finished. This used to show as <code>syscall_-1</code>, because this call overwrites the register that holds its number. sysrr now remembers the number from entry.</td></tr>
+      <tr><td>Result -512 to -516</td><td>A signal interrupted the call, and it will run again.</td></tr>
+      <tr><td><code>==== thread N got signal S ... at rip R, FATAL ====</code></td><td>A signal reached the thread. <code>signal_deliver</code> records it, with the fault address and the instruction. A signal that kills a thread is marked <code>FATAL</code>.</td></tr>
+      <tr><td><code>==== thread N ended: status ... ====</code></td><td>The thread finished. <code>sched_process_exit</code> records its exit status. It may differ from the signal above: when one thread crashes the others get <code>SIGKILL</code>, and a default-action signal can show only here.</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section id="ref">
+  <h2>eBPF rules that shaped the code</h2>
+  <div class="tablewrap"><table>
+    <thead><tr><th>Rule</th><th>What the code does</th></tr></thead>
+    <tbody>
+      <tr><td>Settings can change only before load</td><td><code>.rodata</code> is set between <code>open()</code> and <code>load()</code>. At load it freezes, and the verifier treats it as constants.</td></tr>
+      <tr><td>The stack is 512 bytes</td><td>The 16 KiB chunk lives in <code>scratch</code>.</td></tr>
+      <tr><td><code>reserve</code> needs a constant size</td><td><code>SYSCALL</code> records use <code>reserve</code> and <code>submit</code>. Chunks vary in size, so they use <code>bpf_ringbuf_output</code>, which copies.</td></tr>
+      <tr><td>Loops must not carry counters</td><td>The verifier would explore each value separately (it failed at 1,000,001 instructions). Offsets are computed from the loop index instead.</td></tr>
+      <tr><td>Global functions are checked once</td><td><code>emit_buf</code> isn't re-verified at every call site. The cost is a limit of 5 arguments.</td></tr>
+      <tr><td>Every reference must be released</td><td><code>bpf_task_release</code> is called on every path after <code>bpf_task_from_pid</code>.</td></tr>
+      <tr><td>Waking the reader is expensive</td><td><code>BPF_RB_NO_WAKEUP</code> until the ring is ¼ full. Waking on every record made tracing 5.6× slower; now it's about 2.8×.</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section id="use">
+  <h2>Commands</h2>
+  <pre>make
+sudo ./sysrr -p PID -o rec.log       <span class="dim"># record one process; Ctrl-C stops</span>
+sudo ./sysrr -f -p PID -o rec.log    <span class="dim"># and its children</span>
+sudo ./sysrr -r -p PID -o rec.log    <span class="dim"># also check for buffers changed during a call</span>
+sudo podman container checkpoint --leave-running -e ckpt.tar.gz NAME
+
+./sysrr_dump rec.log                 <span class="dim"># read the log</span>
+./sysrr_dump -s rec.log              <span class="dim"># is it complete?</span>
+./sysrr_dump -g 1 rec.log            <span class="dim"># only generation 1</span></pre>
+  <p>For time to be recorded, <code>clock_gettime</code> must be a real syscall. Normally it answers in user space (the vDSO). Fix that on both machines with <code>echo acpi_pm | sudo tee /sys/devices/system/clocksource/clocksource0/current_clocksource</code>. The tests do this for you. Random bytes have the same gap on recent systems, because glibc's <code>getrandom()</code> also answers in user space, and this trick doesn't help there. The <a href="https://claude.ai/artifact/BrqbnVeMN3qqisG1nxenKb#limits">replay guide</a> explains what happens.</p>
+  <p>One trap: if the target appends to a file in its container while you checkpoint, the restore fails with <code>bad size</code>. CRIU noted the size during the dump, and the file kept growing before podman archived it.</p>
+</section>
+
+<section id="exam">
+  <h2>Exam</h2>
+  <p>17 multiple-choice questions, then 3 to answer in your own words. Each answer shows the explanation right away. Aim for 14 or more correct before moving on to replay; a wrong answer points at the section to re-read. Your answers are kept in this browser, and also saved privately to your account so Claude can review them when you ask.</p>
+
+  <div class="exam-bar">
+    <span class="score" id="score">0 / 17</span>
+    <div class="meter" aria-hidden="true"><span id="meter"></span></div>
+    <span id="answered" class="mono" style="color:var(--muted);font-size:13px">0 answered</span>
+    <button class="btn" id="reset" type="button">Start over</button>
+    <span id="sync" class="mono" style="color:var(--muted);font-size:12px"></span>
+  </div>
+
+  <div id="quiz"></div>
+  <h3>In your own words</h3>
+  <p>Write an answer before revealing the model answer. If yours covers the bullet points, you've got it.</p>
+  <div id="open"></div>
+  <div class="result" id="result" hidden></div>
+</section>
+</main>
+</div>
+
+<script>
+const Q = [
+ { t: "Loading", q: "Why does sysrr.c set skel->rodata->target_tgid after open() but before load()?",
+   o: ["After load, .rodata is frozen and the verifier has already used the value as a constant",
+       "libbpf deletes .rodata once the programs are loaded",
+       "Only the BPF program itself may write .rodata after load",
+       "target_tgid is stored in .bss, which only exists before load"],
+   a: 0, e: "At load, libbpf freezes the .rodata map, and the verifier treats its values as known constants. That's how follow=0 removes the targets hash lookup from the loaded code. Change it after load and nothing would notice." },
+ { t: "Data flow", q: "A target thread enters read() on CPU 3, blocks, and wakes up on CPU 7. Where does sys_exit find the seq and args saved at entry?",
+   o: ["In a per-CPU array slot for CPU 3",
+       "In tstate, the task storage attached to that thread",
+       "In the ring buffer, from the record written at entry",
+       "Nowhere: sys_exit reads them from registers and allocates a new seq"],
+   a: 1, e: "Task storage is attached to the thread's task_struct and moves with it. A per-CPU slot would hand sys_exit CPU 7's data. At entry only DATA records of input buffers are written to the ring; seq and args stay in tstate." },
+ { t: "Data flow", q: "Why is the 16 KiB staging buffer (scratch) a PERCPU_ARRAY rather than a local array?",
+   o: ["BPF programs get a 512-byte stack, and a per-CPU slot is private to the one program run on that CPU",
+       "Helpers refuse pointers to the stack",
+       "User space reads PERCPU_ARRAY maps faster",
+       "bpf_ringbuf_output only accepts map memory"],
+   a: 0, e: "16 KiB doesn't fit the 512-byte stack. The per-CPU slot is safe because syscall tracepoints run with preemption disabled here, and BPF doesn't re-enter the same program on a CPU." },
+ { t: "Data flow", q: "Which map does user space read continuously while the target is running?",
+   o: [".bss, to see the latest seq", "tstate", "events (the ring buffer)", "lost"],
+   a: 2, e: "Only the ring buffer is drained during recording (ring_buffer__poll every 10 ms). lost and gen (.bss) are read once at shutdown. tstate is never read by user space." },
+ { t: "Merging", q: "The file contains, in order: DATA seq 41 (tid 101), SYSCALL seq 57 (tid 102), SYSCALL seq 41 (tid 101). What does this mean?",
+   o: ["Records were reordered by preemption, so the log is corrupt",
+       "Nothing is wrong: thread 102 committed in between, and the decoder matches DATA to SYSCALL by seq",
+       "Seqs 42 to 56 were lost",
+       "sysrr_dump will sort the file by seq first, so order doesn't matter"],
+   a: 1, e: "Two threads share one ring, so their records interleave. sysrr_dump parks DATA records until the SYSCALL record with the same seq arrives. It reads in file order and never sorts." },
+ { t: "Merging", q: "Why does a syscall's DATA always appear before its own SYSCALL record?",
+   o: ["The ring buffer sorts records by type",
+       "The same thread writes them in that order (inputs at entry, outputs and the SYSCALL at exit), and the ring gives out positions in the order they're requested",
+       "Because preemption is disabled",
+       "The consumer moves DATA records forward"],
+   a: 1, e: "Program order within one thread plus reservation order in the ring. The consumer also stops at a reserved-but-unsubmitted record, so it never skips ahead past one." },
+ { t: "Merging", q: "Which of these depends on preemption being disabled?",
+   o: ["DATA records preceding their SYSCALL record",
+       "Seq numbers being unique",
+       "Nothing overwriting scratch between filling it and copying it into the ring",
+       "sys_exit running on the same CPU as sys_enter"],
+   a: 2, e: "Ordering comes from the ring, and uniqueness comes from the atomic increment. sys_exit can run on a different CPU, which is why tstate exists. Only the per-CPU scratch buffer relies on no other run starting on the same CPU." },
+ { t: "Merging", q: "Why is seq_ctr incremented with __sync_fetch_and_add instead of seq_ctr++?",
+   o: ["The program runs on many CPUs at once; two threads of the target could otherwise get the same seq",
+       "The verifier rejects ++ on global variables",
+       "It makes the value visible to user space",
+       "seq_ctr lives in .rodata"],
+   a: 0, e: "++ is load, add, store. Two CPUs can both load 41 and both store 42. The atomic instruction makes the read-modify-write one step." },
+ { t: "Ring buffer", q: "Why does emit_syscall use bpf_ringbuf_reserve/submit, while the data chunks use bpf_ringbuf_output?",
+   o: ["reserve needs a size known at load time; chunks vary in length, and output accepts a bounded variable size",
+       "output is faster for small records",
+       "reserve can't be used inside a global function",
+       "Data records must not trigger a wakeup"],
+   a: 0, e: "The verifier requires a constant size for reserve. rec_syscall is fixed-size, so it's written directly into the ring with no copy. Chunks are 1 to 16384 bytes, so they're built in scratch and copied by output." },
+ { t: "Ring buffer", q: "You change wake_flags() to always return 0 (the default) and run bench_overhead.sh. What do you expect?",
+   o: ["Many lost records",
+       "No measurable change",
+       "Much slower again: the reader is woken for almost every record",
+       "The reader is never woken and the log stays empty"],
+   a: 2, e: "With flag 0 the kernel wakes the reader whenever it has caught up, and a fast reader always has. That's a wakeup per syscall, which was most of raw_sysrr's 5.6× slowdown." },
+ { t: "Verifier", q: "The first chunk_cb did x->off += n and failed with 'processed 1000001 insns'. Why?",
+   o: ["bpf_loop allows at most 8 iterations",
+       "The verifier tracked off's exact value, so each iteration looked like a new state to explore",
+       "bpf_probe_read_user can't read 16 KiB",
+       "Global functions can't call bpf_loop"],
+   a: 1, e: "Off was 0, then 16384, then 32768… all different known constants, so nothing could be pruned. Computing off = i * CHUNK_MAX from the loop index (an unknown value to the verifier) collapses them into one state." },
+ { t: "Verifier", q: "Why is emit_buf a non-static __noinline function?",
+   o: ["Static functions can't use maps",
+       "It's verified once for any arguments instead of at each of its ~70 call sites; the cost is a 5-argument limit",
+       "So user space can call it",
+       "Non-static functions run faster"],
+   a: 1, e: "Global functions are checked on their own (\"safe for any args that match its prototype\" in the load log). The 5-register limit is why emit_iov packs tid/arg/kind into one u64." },
+ { t: "CRIU", q: "Why does sys_enter check for ptrace before the target filter (is_target)?",
+   o: ["It doesn't matter where the check is",
+       "The process calling ptrace is criu, not the target, so it would be filtered out first",
+       "It's faster that way",
+       "ptrace is only visible in the target's own sys_enter"],
+   a: 1, e: "The ptrace call is criu's syscall. Its tgid isn't a target, so after the filter the program would have already returned." },
+ { t: "CRIU", q: "criu calls ptrace(PTRACE_SEIZE, 13825). How does the program know 13825 belongs to the target?",
+   o: ["It compares 13825 with target_tgid",
+       "bpf_task_from_pid(13825) gives the task; its tgid is checked with is_target()",
+       "It reads /proc/13825/status",
+       "It checks that the caller's comm is criu"],
+   a: 1, e: "The pid argument is a thread id, often not the main thread, so comparing with target_tgid would miss it. The task lookup gives the tgid. The reference must then be released (bpf_task_release)." },
+ { t: "CRIU", q: "CRIU seizes all 3 threads of the target and has detached 2 of them so far. What is gen?",
+   o: ["Unchanged: it only increases when seized_cnt drops back to 0",
+       "Increased by 2",
+       "Increased by 1 at the first detach",
+       "Increased by 3 at the seizes"],
+   a: 0, e: "seized_cnt counts threads CRIU currently holds. One checkpoint = one generation, however many threads there are." },
+ { t: "CRIU", q: "While recording, you attach gdb to the target, step a bit, and detach. What does sysrr do?",
+   o: ["Nothing: it only recognizes criu",
+       "It treats it like a checkpoint: syscalls while attached are tagged criu-parasite, and gen increases at detach",
+       "gdb's attach fails because sysrr holds ptrace",
+       "The recorder exits"],
+   a: 1, e: "Detection means \"someone ptrace-attached our target\", not \"criu did\". sysrr doesn't use ptrace, so gdb attaches fine. Checking bpf_get_current_comm() in handle_ptrace would fix this false positive." },
+ { t: "CRIU", q: "At the checkpoint the target was in clock_nanosleep, which got −516 (ERESTART_RESTARTBLOCK). What's the first syscall of generation 1?",
+   o: ["restart_syscall",
+       "clock_nanosleep again with the same arguments",
+       "The syscall after the sleep: CRIU saves −EINTR, so the sleep simply ends",
+       "Undefined: it differs between the live and restored process"],
+   a: 2, e: "CRIU can't restore a restart block, so it saves the registers with −EINTR. The live process and a restored one both see the sleep interrupted and continue with the next syscall, the read in the test log." },
+];
+const OPEN = [
+ { q: "Trace one write(1, buf, 29) from the target: name every map touched, in order, and say what is written or read in each.",
+   m: ["sys_enter: .bss seq_ctr (atomic ++), then tstate gets seq, ts, args, gen, flags (F_DUMP if seized).",
+       "sys_enter: capture_enter picks IN(arg1, 29 bytes); scratch gets the 29 bytes via bpf_probe_read_user; events gets a REC_DATA via bpf_ringbuf_output; tstate.ndata = 1.",
+       "sys_exit: tstate read; write has no outputs; events gets the REC_SYSCALL via reserve/submit with ndata = 1. (With -r: a second IN copy, flagged DF_EXIT, first.)",
+       "(lost only if the ring was full.) sysrr.c polls events and writes both records to the file; sysrr_dump pairs them by seq later, offline."] },
+ { q: "A teammate suggests replacing tstate with a PERCPU_ARRAY keyed by 0 \"because it's faster\". Describe a concrete failure.",
+   m: ["Thread A enters read() on CPU 2 and blocks; its state is in CPU 2's slot.",
+       "Thread B (or any target thread) makes a syscall on CPU 2 and overwrites the slot.",
+       "A wakes on CPU 5: sys_exit reads CPU 5's slot, so wrong seq, args and gen. Data is attributed to the wrong syscall.",
+       "Per-CPU only works for state that starts and ends inside one program run."] },
+ { q: "How would you change handle_ptrace so that gdb or strace attaching to the target is not counted as a checkpoint? What would it still get wrong?",
+   m: ["Call bpf_get_current_comm() and only continue when the caller is \"criu\" (or check the caller's executable).",
+       "Still wrong: a failed SEIZE is counted, because state changes at sys_enter, before ptrace returns.",
+       "Fix for that: remember the request at criu's sys_enter and apply it in sys_exit only if ret == 0."] },
+];
+
+const KEY = "sysrr-exam-v1";
+let state = { picks: {}, open: {}, shown: {} };
+try { const s = JSON.parse(localStorage.getItem(KEY)); if (s && s.picks) state = s; } catch (_) {}
+// Answers also go to a private per-user db doc (data/users/<id>/exam) so Claude can read them for review.
+let remote = null, pushTimer = null;
+const syncMsg = t => { document.getElementById("sync").textContent = t; };
+const push = () => {
+  if (!remote) return;
+  clearTimeout(pushTimer);
+  pushTimer = setTimeout(() => {
+    remote.set({ picks: state.picks, open: state.open, updated: new Date().toISOString() })
+      .then(() => syncMsg("saved for review"), () => syncMsg("not synced"));
+  }, 1200);
+};
+const save = () => { try { localStorage.setItem(KEY, JSON.stringify(state)); } catch (_) {} push(); };
+(async () => {
+  try {
+    const [db, user] = await Promise.all([claude.use("db"), claude.use("user")]);
+    const id = db && user && await user.id();
+    if (!id) return;
+    remote = db.collection("data/users/" + id).doc("exam");
+    const snap = await remote.get();
+    const r = snap.exists ? snap.data() : null;
+    const localEmpty = !Object.keys(state.picks).length && !Object.values(state.open).some(Boolean);
+    if (r && localEmpty) {
+      state = { picks: r.picks || {}, open: r.open || {}, shown: state.shown };
+      try { localStorage.setItem(KEY, JSON.stringify(state)); } catch (_) {}
+      renderQuiz(); renderOpen(); updateScore();
+      syncMsg("saved for review");
+    } else if (!localEmpty && JSON.stringify([r && r.picks, r && r.open]) !== JSON.stringify([state.picks, state.open])) {
+      push();
+    } else if (r) {
+      syncMsg("saved for review");
+    }
+  } catch (_) { remote = null; }
+})();
+const esc = s => s.replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+const code = s => esc(s).replace(/\b(\w+\(\)|\w+->\w+|[a-z_]+_[a-z_]+|PTRACE_\w+|ERESTART_\w+|F_DUMP|seq_ctr\+\+)\b/g, "<code>$1</code>");
+
+function renderQuiz() {
+  const root = document.getElementById("quiz");
+  root.innerHTML = "";
+  Q.forEach((it, i) => {
+    const card = document.createElement("div");
+    card.className = "qcard";
+    card.innerHTML = `<div class="qhead"><span class="qnum">${String(i + 1).padStart(2, "0")}</span><span class="qtopic">${it.t}</span></div><p class="qtext">${code(it.q)}</p><div class="opts"></div>`;
+    const opts = card.querySelector(".opts");
+    const pick = state.picks[i];
+    it.o.forEach((txt, j) => {
+      const b = document.createElement("button");
+      b.type = "button"; b.className = "opt"; b.id = `q${i}o${j}`;
+      b.innerHTML = `<span class="mark">${"ABCD"[j]}</span>${code(txt)}`;
+      if (pick !== undefined) {
+        b.disabled = true;
+        if (j === it.a) b.classList.add("right");
+        else if (j === pick) b.classList.add("wrong");
+      }
+      b.addEventListener("click", () => { state.picks[i] = j; save(); renderQuiz(); updateScore(); });
+      opts.appendChild(b);
+    });
+    if (pick !== undefined) {
+      const ex = document.createElement("div");
+      ex.className = "explain";
+      ex.innerHTML = `<b>${pick === it.a ? "Correct." : "Not quite. Answer: " + "ABCD"[it.a] + "."}</b> ${code(it.e)}`;
+      card.appendChild(ex);
+    }
+    root.appendChild(card);
+  });
+}
+
+function renderOpen() {
+  const root = document.getElementById("open");
+  root.innerHTML = "";
+  OPEN.forEach((it, i) => {
+    const card = document.createElement("div");
+    card.className = "qcard";
+    card.innerHTML = `<div class="qhead"><span class="qnum">W${i + 1}</span><span class="qtopic">explain</span></div><p class="qtext">${code(it.q)}</p>`;
+    const ta = document.createElement("textarea");
+    ta.id = `open${i}`; ta.setAttribute("aria-label", `Your answer to question W${i + 1}`);
+    ta.value = state.open[i] || "";
+    ta.addEventListener("input", () => { state.open[i] = ta.value; save(); });
+    card.appendChild(ta);
+    const row = document.createElement("div");
+    row.style.marginTop = "10px";
+    const b = document.createElement("button");
+    b.type = "button"; b.className = "btn"; b.id = `show${i}`;
+    b.textContent = state.shown[i] ? "Hide model answer" : "Reveal model answer";
+    b.addEventListener("click", () => { state.shown[i] = !state.shown[i]; save(); renderOpen(); });
+    row.appendChild(b);
+    card.appendChild(row);
+    if (state.shown[i]) {
+      const m = document.createElement("div");
+      m.className = "model";
+      m.innerHTML = "<strong>A complete answer mentions:</strong><ul>" + it.m.map(x => `<li>${code(x)}</li>`).join("") + "</ul>";
+      card.appendChild(m);
+    }
+    root.appendChild(card);
+  });
+}
+
+function updateScore() {
+  const answered = Object.keys(state.picks).length;
+  const right = Object.entries(state.picks).filter(([i, p]) => Q[i].a === p).length;
+  document.getElementById("score").textContent = `${right} / ${Q.length}`;
+  document.getElementById("answered").textContent = `${answered} answered`;
+  document.getElementById("meter").style.width = (100 * right / Q.length) + "%";
+  const res = document.getElementById("result");
+  if (answered === Q.length) {
+    const weak = [...new Set(Q.map((q, i) => state.picks[i] !== q.a ? q.t : null).filter(Boolean))];
+    const where = { "Loading": "#ref", "Data flow": "#flow", "Merging": "#seq", "Ring buffer": "#ref", "Verifier": "#ref", "CRIU": "#criu" };
+    res.hidden = false;
+    res.innerHTML = right >= 14
+      ? `<strong>${right} of ${Q.length}.</strong> You have the core model. ${weak.length ? "Review: " + weak.map(w => `<a href="${where[w]}">${w}</a>`).join(", ") + "." : "No weak topics."}`
+      : `<strong>${right} of ${Q.length}.</strong> Re-read ${weak.map(w => `<a href="${where[w]}">${w}</a>`).join(", ")}, then use Start over.`;
+  } else {
+    res.hidden = true;
+  }
+}
+
+document.getElementById("reset").addEventListener("click", () => { state = { picks: {}, open: state.open, shown: {} }; save(); renderQuiz(); renderOpen(); updateScore(); });
+renderQuiz(); renderOpen(); updateScore();
+</script>

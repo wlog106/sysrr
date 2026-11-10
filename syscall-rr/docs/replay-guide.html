@@ -1,0 +1,400 @@
+<title>Inside sysrr_replay</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans+Condensed:wght@500;600&family=IBM+Plex+Sans:ital,wght@0,400;0,600;1,400&display=swap">
+<style>
+/* Layout: one reading column with a contents rail; every idea gets a short heading, a plain paragraph, and at most one table or flow.
+   Same token family as before: teal = kernel, amber = our tool, blue = the target. */
+:root {
+  --bg: #f3f5f4; --surface: #ffffff; --ink: #18201f; --muted: #586563; --line: #d3dbd9;
+  --kernel: #0b6f68; --kernel-soft: #e1f0ee; --user: #9a520c; --user-soft: #f7ebdc;
+  --target: #4b5bb0; --target-soft: #e6e9f7;
+  --good: #2d7a33; --good-soft: #e3f1e3; --bad: #b1261d; --bad-soft: #f8e3e1; --code-bg: #e9eeed;
+  --f-display: "IBM Plex Sans Condensed", "Arial Narrow", system-ui, sans-serif;
+  --f-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --f-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: #0e1413; --surface: #151d1c; --ink: #e2eae8; --muted: #94a5a2; --line: #2a3634;
+    --kernel: #5cc4b8; --kernel-soft: #16302d; --user: #e4a65f; --user-soft: #33261a;
+    --target: #97a5f0; --target-soft: #1e2340;
+    --good: #74c37a; --good-soft: #1a2e1c; --bad: #f08479; --bad-soft: #3a1d1a; --code-bg: #1c2625;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0e1413; --surface: #151d1c; --ink: #e2eae8; --muted: #94a5a2; --line: #2a3634;
+  --kernel: #5cc4b8; --kernel-soft: #16302d; --user: #e4a65f; --user-soft: #33261a;
+  --target: #97a5f0; --target-soft: #1e2340;
+  --good: #74c37a; --good-soft: #1a2e1c; --bad: #f08479; --bad-soft: #3a1d1a; --code-bg: #1c2625;
+}
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--ink); font: 17px/1.65 var(--f-body);
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+.wrap { max-width: 1040px; margin: 0 auto; padding-block: 40px 96px; display: grid; grid-template-columns: 180px minmax(0, 1fr); gap: 48px; }
+nav.toc { position: sticky; top: calc(env(safe-area-inset-top, 0px) + 24px); align-self: start; font-size: 14px; display: flex; flex-direction: column; gap: 6px; }
+nav.toc a { color: var(--muted); text-decoration: none; padding: 2px 0 2px 10px; border-left: 2px solid var(--line); }
+nav.toc a:hover, nav.toc a:focus-visible { color: var(--kernel); border-left-color: var(--kernel); }
+main { min-width: 0; }
+@media (max-width: 860px) { .wrap { grid-template-columns: 1fr; gap: 24px; } nav.toc { position: static; flex-direction: row; flex-wrap: wrap; gap: 6px 14px; } nav.toc a { border-left: 0; padding: 0; } }
+header { margin-bottom: 32px; }
+.eyebrow { font: 600 12px var(--f-display); letter-spacing: .1em; text-transform: uppercase; color: var(--kernel); }
+h1 { font: 600 clamp(36px, 6vw, 52px)/1.05 var(--f-display); margin: 6px 0 14px; letter-spacing: -.01em; text-wrap: balance; }
+h2 { font: 600 28px/1.15 var(--f-display); margin: 0 0 10px; text-wrap: balance; }
+h3 { font: 600 19px/1.3 var(--f-display); margin: 26px 0 8px; text-wrap: balance; }
+.lede { font-size: 19px; max-width: 62ch; margin: 0; }
+section { padding-block: 34px; border-top: 1px solid var(--line); }
+p, ul, ol { max-width: 66ch; }
+p { margin: 0 0 14px; }
+li { margin-bottom: 6px; }
+code, .mono { font-family: var(--f-mono); font-size: .88em; }
+:not(pre) > code { background: var(--code-bg); padding: 1px 5px; border-radius: 4px; }
+pre { background: var(--code-bg); padding: 14px 16px; border-radius: 6px; overflow-x: auto; font: 13.5px/1.55 var(--f-mono); max-width: 100%; margin: 0 0 16px; }
+pre .dim { color: var(--muted); }
+a { color: var(--kernel); }
+.key { background: var(--kernel-soft); padding: 14px 18px; border-radius: 6px; max-width: 68ch; margin: 18px 0; }
+.key p:last-child { margin-bottom: 0; }
+.tablewrap { overflow-x: auto; margin: 0 0 18px; }
+table { border-collapse: collapse; font-size: 15px; min-width: 520px; width: 100%; background: var(--surface); }
+th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font: 600 12px var(--f-display); text-transform: uppercase; letter-spacing: .06em; color: var(--muted); background: var(--bg); }
+.flow { list-style: none; counter-reset: s; padding: 0; margin: 16px 0 20px; max-width: 70ch; display: grid; gap: 8px; }
+.flow li { counter-increment: s; display: grid; grid-template-columns: 28px minmax(0, 1fr); gap: 12px; margin: 0; padding: 10px 14px; border-radius: 6px; background: var(--surface); border: 1px solid var(--line); }
+.flow li::before { content: counter(s); font: 600 14px/26px var(--f-mono); width: 26px; height: 26px; text-align: center; border-radius: 50%; background: var(--code-bg); color: var(--muted); }
+.flow li.k::before { background: var(--kernel-soft); color: var(--kernel); }
+.flow li.u::before { background: var(--user-soft); color: var(--user); }
+.flow li.t::before { background: var(--target-soft); color: var(--target); }
+.who { font: 600 12px var(--f-display); letter-spacing: .06em; text-transform: uppercase; color: var(--muted); display: block; }
+.cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; margin: 16px 0; }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 14px 16px; min-width: 0; }
+.card h3 { margin: 0 0 6px; font-size: 16px; }
+.card p { font-size: 15px; margin: 0; }
+.pill { display: inline-block; font: 600 11px var(--f-display); letter-spacing: .06em; text-transform: uppercase; padding: 2px 8px; border-radius: 999px; white-space: nowrap; }
+.pill.ok { background: var(--good-soft); color: var(--good); }
+.pill.no { background: var(--bad-soft); color: var(--bad); }
+.pill.run { background: var(--kernel-soft); color: var(--kernel); }
+.pill.fake { background: var(--user-soft); color: var(--user); }
+details.quiz { background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 12px 16px; margin: 0 0 10px; max-width: 72ch; }
+details.quiz summary { cursor: pointer; font-weight: 600; }
+details.quiz summary:focus-visible { outline: 2px solid var(--kernel); outline-offset: 3px; }
+details.quiz[open] summary { margin-bottom: 8px; }
+details.quiz p:last-child { margin-bottom: 0; }
+td small { color: var(--muted); }
+</style>
+
+<div class="wrap">
+<nav class="toc" aria-label="Contents">
+  <a href="#idea">The idea</a>
+  <a href="#start">Getting started</a>
+  <a href="#syscall">One syscall</a>
+  <a href="#decide">Fake or run</a>
+  <a href="#timing">Timing-only calls</a>
+  <a href="#order">Keeping threads in order</a>
+  <a href="#children">New threads, processes</a>
+  <a href="#fds">Real file descriptors</a>
+  <a href="#mmap">New memory mappings</a>
+  <a href="#end">How a replay ends</a>
+  <a href="#tests">The test suite</a>
+  <a href="#bugs">Bugs it found</a>
+  <a href="#crashes">Crashes</a>
+  <a href="#limits">Limits</a>
+  <a href="#use">Commands</a>
+  <a href="#check">Check yourself</a>
+</nav>
+
+<main>
+<header>
+  <div class="eyebrow">syscall-rr · replay side</div>
+  <h1>Inside sysrr_replay</h1>
+  <p class="lede">A restored process wakes up at the moment of the checkpoint. sysrr_replay answers each of its syscalls from the log made by <a href="https://claude.ai/artifact/6ZebwgVF4vFLJRKdhWRsFA">sysrr</a>, so the process lives through the same events again, without the original files, network or clock.</p>
+</header>
+
+<section id="idea">
+  <h2>The idea</h2>
+  <p>The checkpoint gives the starting state. The log gives everything the process learned after that. Feed it the same answers, and it computes the same state.</p>
+  <p>So we need a way to stop each syscall and answer it ourselves. The kernel has a feature for this, called <strong>seccomp user notification</strong>. It turns each syscall into a question to our program:</p>
+  <div class="key"><p>“Thread 1 wants <code>read(3, buf, 16)</code>. What happens?”<br>“It returned 16, and here are the 16 bytes.” The real <code>read</code> never runs.</p></div>
+  <p>Other options didn't fit. This kernel can't override syscall results from eBPF. ptrace stops the process twice per syscall and conflicts with CRIU. A launcher can't work either, because a restored process never calls <code>execve</code>.</p>
+</section>
+
+<section id="start">
+  <h2>Getting started</h2>
+  <p>A process can only install a seccomp filter on itself, and it must not run any syscall before that. So we make the frozen process install it, as if its own code had asked:</p>
+  <ol class="flow">
+    <li class="t"><div><span class="who">Restore, frozen</span>A line in <code>/etc/criu/default.conf</code> (<code>leave-stopped</code>) makes CRIU hand over the process stopped. The file is removed right after, or later checkpoints would freeze too.</div></li>
+    <li class="u"><div><span class="who">Take control for a moment</span>ptrace attaches, saves the registers, and writes a tiny <code>syscall; int3</code> at the current instruction.</div></li>
+    <li class="u"><div><span class="who">Make it run our calls</span>Set the registers and let it run: <code>mmap</code> a page, <code>prctl(NO_NEW_PRIVS)</code>, <code>seccomp(...)</code>. That returns a listener fd, and we copy it to ourselves with <code>pidfd_getfd</code>.</div></li>
+    <li class="u"><div><span class="who">Clean up and let go</span>Unmap the page, close its copy of the fd, restore the code and registers, detach, send <code>SIGCONT</code>.</div></li>
+  </ol>
+  <p>This takes a few milliseconds and happens after CRIU has finished, so the two don't conflict. Each process in the tree gets its own filter. A process forked later inherits its parent's.</p>
+</section>
+
+<section id="syscall">
+  <h2>One syscall</h2>
+  <ol class="flow">
+    <li class="t"><div><span class="who">Target</span>Calls <code>read(3, buf, 16)</code>. The kernel parks it before running anything.</div></li>
+    <li class="u"><div><span class="who">sysrr_replay</span>Receives the question and finds that thread's next record: <code>read = 16</code>, with 16 bytes.</div></li>
+    <li class="u"><div><span class="who">sysrr_replay</span>Checks it's the same call, then writes the 16 bytes into <code>buf</code> with <code>process_vm_writev</code>.</div></li>
+    <li class="k"><div><span class="who">Kernel</span>Returns 16 to the target. The file was never read.</div></li>
+  </ol>
+  <p>Addresses aren't in the log. A record says “argument 1”, and replay uses the pointer in the current call. It works because the restored address space matches the original.</p>
+</section>
+
+<section id="decide">
+  <h2>Fake, run, or stop</h2>
+  <p>Each call is first compared with the record:</p>
+  <div class="tablewrap"><table>
+    <thead><tr><th>Check</th><th>If it fails</th></tr></thead>
+    <tbody>
+      <tr><td>Same syscall?</td><td><span class="pill no">divergence</span> The process took another path.</td></tr>
+      <tr><td>Same data going out (<code>write</code> text, paths)?</td><td><span class="pill no">divergence</span> Its state has drifted. With <code>-c</code>, only a warning.</td></tr>
+      <tr><td>Same arguments?</td><td>A warning.</td></tr>
+    </tbody>
+  </table></div>
+  <p>Then it's answered one of two ways:</p>
+  <div class="cols">
+    <div class="card"><h3><span class="pill fake">fake</span></h3><p>Anything that touches the outside world: <code>read</code>, <code>write</code>, <code>recv</code>, <code>open</code>, <code>stat</code>, <code>clock_gettime</code>, <code>getrandom</code>, <code>nanosleep</code>. The call never runs, and the recorded result is returned.</p></div>
+    <div class="card"><h3><span class="pill run">run for real</span></h3><p>Anything that changes the process itself: <code>mmap</code>, <code>brk</code>, <code>clone</code>, <code>execve</code>, <code>futex</code>, <code>close</code>, <code>rt_sigaction</code>, <code>exit</code>. Faking these would leave it without the memory or thread it expects.</p></div>
+  </div>
+  <p>A wrong value only shows up when the process hands something based on it back to the kernel. That's why a divergence report also lists the thread's last five calls: the cause is often a little earlier.</p>
+</section>
+
+<section id="timing">
+  <h2>Timing-only calls</h2>
+  <p>Some calls only show how a thread got through a lock:</p>
+  <ul>
+    <li><code>futex</code>: did the thread have to sleep, or was the lock free?</li>
+    <li><code>clock_gettime(MONOTONIC)</code>: a timed wait reads the clock only if the lock was taken.</li>
+    <li><code>rt_sigreturn</code>: did its child's <code>SIGCHLD</code> happen to arrive just then?</li>
+  </ul>
+  <p>These depend on nanoseconds, so a replay can legitimately differ. Replay treats their records as hints. A recorded one that doesn't happen is dropped, and an unrecorded one simply runs. What really decides the outcome is the process's memory, which every thread sees.</p>
+  <p>Before this rule, Redis sometimes failed even with <code>-S</code>, because a lock was contended live and free in the replay. <code>CLOCK_REALTIME</code> stays strict, because programs print and store it.</p>
+</section>
+
+<section id="order">
+  <h2>Keeping threads in order</h2>
+  <p>Each thread always gets its own results. The question is how threads run relative to each other. If they share memory, order changes the result. There are three modes:</p>
+  <div class="tablewrap"><table>
+    <thead><tr><th>Mode</th><th>What it does</th><th>Use it for</th></tr></thead>
+    <tbody>
+      <tr><td>Default</td><td>Each thread follows its own list.</td><td>One thread, or threads that share nothing.</td></tr>
+      <tr><td><code>-T</code></td><td>Only one thread runs user code at a time, in the order calls <em>returned</em>.</td><td><strong>Try this first</strong> for anything that shares memory or forks.</td></tr>
+      <tr><td><code>-S</code></td><td>Syscalls <em>start</em> in the recorded order. An early thread waits.</td><td>Faster, for when threads rarely touch the same memory. It failed 2 of 9 runs on our two-thread test, while <code>-T</code> passed 6 of 6.</td></tr>
+    </tbody>
+  </table></div>
+  <p>Why <code>-T</code> exists: nginx workers bump a shared counter right after <code>accept4</code>, with no syscall. Under <code>-S</code>, once A's call is answered, B's is released while A is still running, and the two race. Under <code>-T</code>, B waits until A reaches its next syscall.</p>
+  <p>Two calls count from when they <em>started</em> rather than when they returned. A <code>clone</code> must run before its child's first syscall, even though it returns after it. An <code>execve</code> must run before a <code>vfork</code> parent can wake up. Without this, each side waits for the other forever.</p>
+</section>
+
+<section id="children">
+  <h2>New threads and processes</h2>
+  <p>A <code>clone</code> runs for real, so the kernel picks the new id. But the program has seen recorded ids: <code>wait4</code> is faked, while <code>fork</code> and <code>getpid</code> are real. All of them must agree.</p>
+  <p>So replay sets the next id just before each <code>clone</code>, by writing to <code>/proc/sys/kernel/ns_last_pid</code>. That file acts on the writer's own pid namespace, so a small helper joins the target's namespace, forks a child inside it, and the child writes the number.</p>
+  <p>The tests create hundreds of processes and threads, and each one gets its recorded id. If the number is ever taken, replay prints a warning and matches threads by order instead.</p>
+</section>
+
+<section id="fds">
+  <h2>Real file descriptors</h2>
+  <p>A faked <code>open = 3</code> creates nothing, so fd 3 doesn't exist. Faked reads don't care, but a real <code>mmap(3)</code> would fail. So replay puts a real fd at the recorded number with <code>SECCOMP_IOCTL_NOTIF_ADDFD</code>:</p>
+  <div class="tablewrap"><table>
+    <thead><tr><th>Recorded call</th><th>What gets installed</th></tr></thead>
+    <tbody>
+      <tr><td><code>open</code>, <code>openat</code></td><td>The same file, opened inside the container. If it's missing: a memfd for a file the target creates, otherwise <code>/dev/null</code>.</td></tr>
+      <tr><td><code>socket</code>, <code>accept</code></td><td>A socket of the same kind, never connected.</td></tr>
+      <tr><td><code>pipe</code>, <code>socketpair</code>, <code>eventfd</code>, <code>epoll</code>, <code>timerfd</code>, <code>memfd</code></td><td>A new empty one.</td></tr>
+      <tr><td><code>dup</code>, <code>dup2</code></td><td>A copy of the target's own fd.</td></tr>
+      <tr><td>An fd received over a socket; anything else</td><td><code>/dev/null</code></td></tr>
+    </tbody>
+  </table></div>
+  <p>Data still comes from the log. The fd only has to exist for the calls that run for real. <code>close</code> runs for real too, so the fd table stays the same as in the recording.</p>
+  <p>The supervisor is root on the host, so it opens files with <code>openat2(RESOLVE_IN_ROOT)</code>. Without that, a symlink in the container to <code>/etc/shadow</code> would hand over the host's file.</p>
+</section>
+
+<section id="mmap">
+  <h2>New memory mappings</h2>
+  <p>A real <code>mmap</code> may land elsewhere than in the recording, because CRIU can't restore the base address the kernel picks from. Allocators like jemalloc notice and take another path.</p>
+  <p>seccomp can't change arguments, but ptrace can. Replay interrupts the parked thread, sets the recorded address with <code>MAP_FIXED_NOREPLACE</code>, and lets the kernel restart the call. This takes a few hundred microseconds per mapping.</p>
+</section>
+
+<section id="end">
+  <h2>How a replay ends</h2>
+  <p>When a thread runs out of records, its next syscall stays unanswered, unless it's a timing-only call, which runs for real so that other threads waiting on it aren't stuck. When all records are used, <code>-e</code> decides what happens:</p>
+  <div class="tablewrap"><table>
+    <thead><tr><th>Option</th><th>What happens</th><th>Use it to</th></tr></thead>
+    <tbody>
+      <tr><td><code>-e stop</code> (default)</td><td>Freezes the process. The tool keeps running.</td><td>Look around with gdb or <code>/proc</code>.</td></tr>
+      <tr><td><code>-e live</code></td><td>Runs real syscalls from now on.</td><td>Let it carry on from there.</td></tr>
+      <tr><td><code>-e kill</code></td><td>Kills it.</td><td>Scripts and tests.</td></tr>
+    </tbody>
+  </table></div>
+  <p>A divergence ends it the same way. If nothing moves for 20 seconds, for example when threads wait on each other, replay reports that as a divergence and says who is waiting. If the target exits or crashes by itself, replay says so and stops. If the live run went on to exit normally and this one didn't, that counts as a divergence.</p>
+  <p><strong>Keep the tool running.</strong> The filter can't be removed, so if the tool exits, the target's syscalls fail with <code>ENOSYS</code>.</p>
+</section>
+
+<section id="tests">
+  <h2>The test suite</h2>
+  <p><code>tests/run_all.sh</code> runs each target through the same cycle: record, checkpoint, restore, replay, compare with the live run. The last full run, on 2026-11-06, passed all 14 tests, two rounds each, on both machines.</p>
+  <p>Two tests can still fail now and then for known reasons. <code>nginx</code> can lose the race on its shared <code>conn=</code> counter, and the tool reports it. <code>python</code> can hit <code>CRIU checkpointing failed -52</code> before any replay starts.</p>
+  <p>The tests are <code>basic</code>, <code>threads</code>, <code>fds</code>, <code>syscalls</code>, <code>fork</code>, <code>thread-new</code>, <code>exit</code>, <code>crash</code>, <code>signal</code>, <code>vdso-random</code>, <code>shell</code>, <code>python</code>, <code>redis</code> and <code>nginx</code>. <code>signal</code>, <code>vdso-random</code> and <code>shell</code> depend on something replay doesn't reproduce, so they pass when the tool ends by itself and says what happened.</p>
+
+  <h2>Bugs the suite found</h2>
+  <p>All found and fixed on 2026-11-06. Redis and nginx never hit most of them, because their threads already existed at the checkpoint.</p>
+  <div class="tablewrap"><table>
+    <thead><tr><th>Symptom</th><th>Cause</th><th>Fix</th></tr></thead>
+    <tbody>
+      <tr><td>Any new thread or process diverged at once</td><td>A child's first record is <code>clone = 0</code>, which it never calls</td><td>Skip records with no entry event</td></tr>
+      <tr><td>New processes had the wrong pid</td><td>The kernel picked the next free one</td><td>Set <code>ns_last_pid</code> before each <code>clone</code></td></tr>
+      <tr><td>About 40 syscalls returned garbage</td><td>Their outputs were never recorded</td><td>Added to the recorder</td></tr>
+      <tr><td>Every <code>recvmsg</code> with data diverged</td><td>Its header was compared with the wrong memory</td><td>Label that piece correctly</td></tr>
+      <tr><td>A call the container refuses diverged</td><td>Its record has no entry event, and it never reaches us</td><td>Same fix as the first row</td></tr>
+      <tr><td>Redis failed now and then, even with <code>-S</code></td><td>Lock contention counted as a mismatch</td><td>Timing-only calls</td></tr>
+      <tr><td><code>-T</code> hung on any program that forks</td><td>Parent and child waited for each other</td><td>Count <code>clone</code> and <code>execve</code> from their start</td></tr>
+      <tr><td>The tool crashed at startup with <code>ptrace: EPERM</code></td><td>The checkpoint held a zombie child</td><td>Skip zombies</td></tr>
+      <tr><td>A signal handler's return showed as <code>syscall_-1</code></td><td>The call overwrites its own number</td><td>Remember the number from entry</td></tr>
+      <tr><td><code>-w</code> captured a child's pipe output</td><td>It trusted the number 1, not the file</td><td>Compare the actual file</td></tr>
+      <tr><td>Children that ran <code>execve</code> broke</td><td><code>brk</code> was judged by the live address, which changes after <code>execve</code>, so it got a faked result</td><td>Judge it by the recorded request</td></tr>
+      <tr><td>A finished replay was reported as “no progress”</td><td>The end was only noticed when a thread asked for its next call</td><td>Also check when everything goes quiet</td></tr>
+      <tr><td>A thread past its last record blocked the others</td><td>Its <code>futex</code> wait was held forever</td><td>Timing-only calls run for real there</td></tr>
+      <tr><td>Threads deadlocked in recorded order</td><td>A thread waits for a lock held by a thread parked behind it</td><td>After 2 s of silence, let one go early, up to 8 times, and say so in the report</td></tr>
+      <tr><td>A thread polling with sleeps always diverged</td><td>How many times it sleeps is pure timing</td><td>Sleeps are timing-only calls</td></tr>
+      <tr><td>A polling thread hid a stall</td><td>Its calls looked like activity</td><td>Watch whether records get used</td></tr>
+      <tr><td>A process list could overflow, and signals could reach a recycled pid</td><td>Fixed-size tables; signals sent by pid</td><td>Growing tables; signals sent through pidfds</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section id="crashes">
+  <h2>Diagnosing a crash</h2>
+  <p>The recorder also logs fatal signals and how each thread ended, so the replay's report ends with how the live run died: the signal, the fault address, and the library and offset of the instruction.</p>
+  <p><code>tests/run_crashes.sh</code> crashes programs in 32 different ways. A second recorder then watches the replay, and the test compares the two deaths. Last run: 2 rounds on each machine.</p>
+  <div class="tablewrap"><table>
+    <thead><tr><th>Kind of crash</th><th>Replay</th></tr></thead>
+    <tbody>
+      <tr><td>Bad memory, overflows, double free, division by zero, bad instruction, failed assert, a failed syscall that leads to a crash, a worker thread or a child crashing; Rust and Python NULL writes; a C++ exception</td><td>Same signal, address and instruction, every time</td></tr>
+      <tr><td>Clean exit with an error code; Rust panic; Python exception</td><td>Same exit code</td></tr>
+      <tr><td>Killed by <code>kill -9</code>, a watchdog timer or <code>SIGPIPE</code></td><td>Same way of dying: nothing in the replay sends these, so the tool delivers the signal at the end of the records</td></tr>
+      <tr><td>A deadlock</td><td>Reaches the same point, then stops</td></tr>
+      <tr><td>A race with a syscall inside the window</td><td>Same crash, every time</td></tr>
+      <tr><td>Redis <code>DEBUG SEGFAULT</code>; Go nil pointer</td><td>Redis: same fault every time, then diverges in its crash handler. Go: same fault 1 of 4 in the last run, otherwise a divergence.</td></tr>
+      <tr><td>A race entirely in user code (<code>race-memory</code>)</td><td>Same crash 1 of 4; the others diverged and said so.</td></tr>
+      <tr><td>Real pbzip2 0.9.4 with delays added (below)</td><td>See below.</td></tr>
+    </tbody>
+  </table></div>
+  <h3>A race with no fixed outcome</h3>
+  <p><code>queue-race</code> is our own program with the same bug shape as a race known from pbzip2 0.9.4: workers are never joined, and main frees the queue while some still wait. It's tuned so the outcome varies. Over 18 rounds that got past setup:</p>
+  <div class="tablewrap"><table>
+    <thead><tr><th>Live run</th><th>Rounds</th><th>Replay</th></tr></thead>
+    <tbody>
+      <tr><td>Crashed</td><td>13</td><td>Same crash</td></tr>
+      <tr><td>Crashed</td><td>2</td><td>No crash, and the report says the replay went another way</td></tr>
+      <tr><td>Exited 0</td><td>3</td><td>Crashed, and the report says the live run exited normally</td></tr>
+    </tbody>
+  </table></div>
+  <h3>The real pbzip2</h3>
+  <p>pbzip2 0.9.4, built from a GitHub copy after removing three added <code>sleep(10)</code> calls. We couldn't compare that copy with the official release.</p>
+  <ul>
+    <li><strong>Unmodified, it never crashed:</strong> 0 of 365 runs, even on one CPU.</li>
+    <li><strong>With two compile-time delays,</strong> it crashed in about 80% of runs. The code path is real, but the timing is forced.</li>
+    <li><strong>The log finds the bug by itself:</strong> fault address <code>0x30</code>, the offset of <code>mut</code> in the queue, at <code>pbzip2.cpp:886</code>, <code>pthread_mutex_lock(fifo-&gt;mut)</code>. So a worker read <code>fifo</code> after main set it to NULL. You get this from the recording even if the replay diverges.</li>
+    <li><strong>The replay matched only sometimes:</strong> the same crash in 3 of 9 crashing rounds in the main test, and the rest reported a divergence. Which worker wins the queue mutex isn't in the log.</li>
+  </ul>
+  <ul>
+    <li><strong>Hidden crashes are real.</strong> A thread can fault just as another calls <code>exit_group</code>. The process exits 0 and looks healthy, but the recorder saw the fault. The report says <code>another thread's exit_group got there first and hid this crash</code>.</li>
+    <li><strong>A replay crash means the bug is real, not that this is what happened.</strong> Replay only controls the order of syscalls. User code between them can race differently.</li>
+  </ul>
+</section>
+
+<section id="limits">
+  <h2>Limits</h2>
+  <p>A replay that can't reproduce something should say so. These are the known limits:</p>
+  <div class="tablewrap"><table>
+    <thead><tr><th>Not reproduced</th><th>Why</th><th>What you see</th></tr></thead>
+    <tbody>
+      <tr><td>Signals that arrive at arbitrary moments</td><td>Not replayed. Their timing is not in the log.</td><td>A divergence at the first value they changed. Shell scripts often hit this through <code>SIGCHLD</code>.</td></tr>
+      <tr><td>Threads competing for a busy lock (Python threads and the GIL)</td><td>Who won the lock is not in the log.</td><td>A divergence, or “no progress” after 20 s.</td></tr>
+      <tr><td>Races inside overlapping user code</td><td>Memory accesses make no syscall. <code>-T</code> runs the stretches one after another, which can pick the other winner.</td><td>A divergence if the result is later printed or sent. A crash can happen in only one of the two runs.</td></tr>
+      <tr><td>Crash handlers that wait for other threads (Redis)</td><td>They signal the other threads, and those signals aren't replayed.</td><td>The same fault, then a divergence in the handler.</td></tr>
+      <tr><td>Go programs</td><td>Goroutines hop between threads, so per-thread records don't line up.</td><td>A divergence, sometimes after reaching the same fault.</td></tr>
+      <tr><td>Random bytes from glibc's <code>getrandom()</code>, on kernel 6.11+ and glibc 2.41+</td><td>The vDSO makes them in user space, so no syscall records them. The same machine usually gets the same bytes, because the generator's state is in the process's memory.</td><td>On another machine, the vDSO asks for a new key with a real syscall. Replay reports a divergence and explains it. Reading <code>/dev/urandom</code> is fine.</td></tr>
+      <tr><td>Files received over a socket</td><td>The log has the number, not the file. The stand-in is <code>/dev/null</code>.</td><td>A real <code>mmap</code> of it fails.</td></tr>
+      <tr><td>io_uring, memory shared with outside processes, <code>rdtsc</code></td><td>None of them use a syscall per event.</td><td>Possibly nothing until a value is printed or sent.</td></tr>
+      <tr><td>Files the replay wrote</td><td>Writes are faked, so a later real <code>mmap</code> sees the old file. (Stand-in memfds are the exception: writes to them run for real.)</td><td>A divergence, or wrong mapped data.</td></tr>
+    </tbody>
+  </table></div>
+  <p>With <code>-e live</code>, the process carries on with stand-in fds: unconnected sockets and empty memfds.</p>
+  <p>Traps when restoring:</p>
+  <ul>
+    <li><strong><code>bad size</code>:</strong> the target was growing a file during the checkpoint. Keep such files out of the container's writable layer.</li>
+    <li><strong><code>can't write lsm profile -2</code>:</strong> podman loads its AppArmor profile only when it starts a container. Run <code>podman run --rm IMAGE true</code> once after boot.</li>
+    <li><strong><code>CRIU checkpointing failed -52</code>:</strong> seen now and then on the <code>python</code> test, which starts child processes constantly. The cause isn't confirmed. Try the checkpoint again.</li>
+    <li><strong>PID 1 ignores some signals:</strong> a container's first process ignores default-action signals sent from inside, so a test of <code>SIGPIPE</code> or <code>SIGALRM</code> needs a child process.</li>
+    <li><strong>CRIU refuses some objects:</strong> an open POSIX message queue, or an inotify watch on overlayfs.</li>
+    <li><strong>Same paths:</strong> a bind-mounted directory must exist at the same path on the replay machine.</li>
+  </ul>
+</section>
+
+<section id="use">
+  <h2>Commands</h2>
+  <pre><span class="dim"># restore, frozen</span>
+echo leave-stopped | sudo tee /etc/criu/default.conf
+sudo podman container restore --import ckpt.tar.gz --name NEW
+sudo rm /etc/criu/default.conf
+
+<span class="dim"># replay</span>
+sudo ./sysrr_replay -p $(sudo podman inspect -f '{{.State.Pid}}' NEW) -g 1 rec.log
+
+  -g N       generation to replay
+  -S         syscalls start in recorded order
+  -T         one thread runs at a time, in the order calls returned
+  -e WHAT    at the end: stop, live or kill
+  -w FILE    save what the target writes to stdout and stderr
+  -c         only warn when data differs
+  -v         print every syscall
+  -N         don't install real fds (for comparison)
+
+<span class="dim"># tests</span>
+tests/run_all.sh                     <span class="dim"># everything, on this machine</span>
+tests/run_all.sh fork redis          <span class="dim"># some of them</span>
+ROUNDS=5 tests/run_all.sh fork       <span class="dim"># repeat, to catch flaky behaviour</span>
+REMOTE=claude-test SSH="ssh -i ~/.ssh/to-test" tests/run_all.sh   <span class="dim"># restore on another machine</span></pre>
+</section>
+
+<section id="check">
+  <h2>Check yourself</h2>
+  <p>Answer in your head, then open the answer.</p>
+
+  <details class="quiz"><summary>1. Why can't a launcher install the filter and then start the program?</summary>
+    <p>A restored process is rebuilt by CRIU in the middle of its life. It never calls <code>execve</code>, so nothing could run first. The <code>seccomp()</code> call has to be injected into it.</p></details>
+
+  <details class="quiz"><summary>2. Replaying <code>read(3, buf, 16) = 16</code>: what happens to fd 3?</summary>
+    <p>Nothing. The kernel parks the call, replay writes the 16 recorded bytes into <code>buf</code> and answers 16. The real <code>read</code> never runs.</p></details>
+
+  <details class="quiz"><summary>3. A wrong byte goes in at a <code>read</code>, but the divergence appears two calls later. Why not at the <code>read</code>?</summary>
+    <p>At the <code>read</code>, replay supplies the data itself, so there's nothing to compare. A difference shows only when the process hands out something based on it, here the next <code>write</code>.</p></details>
+
+  <details class="quiz"><summary>4. Why does <code>futex</code> run for real, and why may its records be dropped?</summary>
+    <p>It runs for real because a faked wait would let a thread continue before it should. Its records can be dropped because whether a lock was busy depends on nanoseconds, and the outcome is decided by the process's memory.</p></details>
+
+  <details class="quiz"><summary>5. <code>fork</code> runs for real and <code>wait4</code> is faked. How do their pids agree?</summary>
+    <p>Just before the <code>clone</code>, replay sets <code>ns_last_pid</code> in the target's pid namespace to the recorded pid minus one. The kernel then hands out the recorded pid, and it matches what <code>wait4</code> returns.</p></details>
+
+  <details class="quiz"><summary>6. Two threads share a counter and print it. Which mode, and why?</summary>
+    <p>Start with <code>-T</code>. Under <code>-S</code>, once one thread's syscall is answered, the other's can be released while the first is still updating the counter. <code>-T</code> waits until the first reaches its next syscall.</p></details>
+
+  <details class="quiz"><summary>7. Why does <code>-T</code> order <code>clone</code> by when it started?</summary>
+    <p>A child's first syscalls return before the parent's <code>clone</code> does. Ordered by return time, the child would wait for a record that needs the parent, and the parent's <code>clone</code> would wait behind the child. So nothing could move.</p></details>
+
+  <details class="quiz"><summary>8. A faked <code>open</code> installs a real fd. Why must <code>close</code> run for real?</summary>
+    <p>A faked <code>close</code> would leave the fd open. Real calls would then get different numbers than in the recording, and fds would eventually run out.</p></details>
+
+  <details class="quiz"><summary>9. A shell script diverges at <code>wait4</code>. What's the likely cause, and is the tool broken?</summary>
+    <p>The tool is working as designed. The shell's flow depends on when <code>SIGCHLD</code> arrived, and arbitrary signal timing isn't replayed. Reporting a divergence is the correct result.</p></details>
+
+  <details class="quiz"><summary>10. You press Ctrl-C after a replay in stop mode, then send <code>SIGCONT</code>. What happens?</summary>
+    <p>The listener closed with the tool, so each syscall the target makes now fails with <code>ENOSYS</code>. Keep the tool running, or use <code>-e live</code>.</p></details>
+</section>
+</main>
+</div>

@@ -1,0 +1,999 @@
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+<title>Inside sysrr_replay</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans+Condensed:wght@500;600&family=IBM+Plex+Sans:ital,wght@0,400;0,600;1,400&display=swap">
+<style>
+/* Layout: sticky contents rail on the left, one reading column; lane diagrams may run wider than the text.
+   Same token family as the record guide (Inside sysrr): teal = kernel, amber = user space / our tool. */
+:root {
+  --bg: #f3f5f4;
+  --surface: #ffffff;
+  --ink: #18201f;
+  --muted: #586563;
+  --line: #d3dbd9;
+  --kernel: #0b6f68;
+  --kernel-soft: #e1f0ee;
+  --user: #9a520c;
+  --user-soft: #f7ebdc;
+  --target: #4b5bb0;
+  --target-soft: #e6e9f7;
+  --good: #2d7a33;
+  --good-soft: #e3f1e3;
+  --bad: #b1261d;
+  --bad-soft: #f8e3e1;
+  --code-bg: #e9eeed;
+  --f-display: "IBM Plex Sans Condensed", "Arial Narrow", system-ui, sans-serif;
+  --f-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --f-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: #0e1413; --surface: #151d1c; --ink: #e2eae8; --muted: #94a5a2; --line: #2a3634;
+    --kernel: #5cc4b8; --kernel-soft: #16302d; --user: #e4a65f; --user-soft: #33261a;
+    --target: #97a5f0; --target-soft: #1e2340;
+    --good: #74c37a; --good-soft: #1a2e1c; --bad: #f08479; --bad-soft: #3a1d1a; --code-bg: #1c2625;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0e1413; --surface: #151d1c; --ink: #e2eae8; --muted: #94a5a2; --line: #2a3634;
+  --kernel: #5cc4b8; --kernel-soft: #16302d; --user: #e4a65f; --user-soft: #33261a;
+  --target: #97a5f0; --target-soft: #1e2340;
+  --good: #74c37a; --good-soft: #1a2e1c; --bad: #f08479; --bad-soft: #3a1d1a; --code-bg: #1c2625;
+}
+
+* { box-sizing: border-box; }
+body {
+  background: var(--bg); color: var(--ink);
+  font: 16px/1.62 var(--f-body);
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+.wrap { max-width: 1120px; margin: 0 auto; padding-block: 40px 96px;
+  display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: 48px; }
+nav.toc { position: sticky; top: calc(env(safe-area-inset-top, 0px) + 24px); align-self: start;
+  font-size: 14px; display: flex; flex-direction: column; gap: 6px; }
+nav.toc .label { font: 600 12px var(--f-display); text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin-bottom: 4px; }
+nav.toc a { color: var(--muted); text-decoration: none; padding: 2px 0 2px 10px; border-left: 2px solid var(--line); }
+nav.toc a:hover, nav.toc a:focus-visible { color: var(--kernel); border-left-color: var(--kernel); }
+main { min-width: 0; }
+@media (max-width: 860px) { .wrap { grid-template-columns: 1fr; gap: 24px; } nav.toc { position: static; flex-direction: row; flex-wrap: wrap; gap: 6px 14px; } nav.toc .label { width: 100%; } nav.toc a { border-left: 0; padding: 0; } }
+
+header { margin-bottom: 40px; }
+.eyebrow { font: 600 12px var(--f-display); letter-spacing: .1em; text-transform: uppercase; color: var(--kernel); }
+h1 { font: 600 clamp(36px, 6vw, 54px)/1.05 var(--f-display); margin: 6px 0 14px; letter-spacing: -.01em; text-wrap: balance; }
+h2 { font: 600 30px/1.15 var(--f-display); margin: 0 0 8px; text-wrap: balance; }
+h3 { font: 600 20px/1.3 var(--f-display); margin: 30px 0 8px; text-wrap: balance; }
+.lede { font-size: 18px; color: var(--muted); max-width: 66ch; margin: 0; }
+section { padding-block: 40px; border-top: 1px solid var(--line); }
+section > .q { font: 600 13px var(--f-display); letter-spacing: .08em; text-transform: uppercase; color: var(--user); margin-bottom: 4px; }
+p, ul, ol { max-width: 68ch; }
+p { margin: 0 0 14px; }
+li { margin-bottom: 6px; }
+code, .mono { font-family: var(--f-mono); font-size: .88em; }
+:not(pre) > code { background: var(--code-bg); padding: 1px 5px; border-radius: 4px; }
+pre { background: var(--code-bg); padding: 14px 16px; border-radius: 6px; overflow-x: auto; font: 13.5px/1.55 var(--f-mono); max-width: 100%; margin: 0 0 16px; }
+pre .hl-bad { color: var(--bad); font-weight: 600; }
+pre .hl-good { color: var(--good); font-weight: 600; }
+pre .dim { color: var(--muted); }
+a { color: var(--kernel); }
+.answer { background: var(--surface); border: 1px solid var(--line); border-left: 4px solid var(--kernel); padding: 14px 18px; border-radius: 4px; max-width: 72ch; margin: 18px 0; }
+.answer p:last-child { margin-bottom: 0; }
+.answer strong:first-child { color: var(--kernel); }
+.warn { border-left-color: var(--bad); }
+.warn strong:first-child { color: var(--bad); }
+
+.tablewrap { overflow-x: auto; margin: 0 0 18px; }
+table { border-collapse: collapse; font-size: 14px; min-width: 560px; width: 100%; background: var(--surface); }
+th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font: 600 12px var(--f-display); text-transform: uppercase; letter-spacing: .06em; color: var(--muted); background: var(--bg); }
+td code { white-space: nowrap; }
+.pill { display: inline-block; font: 600 11px var(--f-display); letter-spacing: .06em; text-transform: uppercase; padding: 2px 8px; border-radius: 999px; }
+.pill.fake { background: var(--user-soft); color: var(--user); }
+.pill.run { background: var(--kernel-soft); color: var(--kernel); }
+.pill.stop { background: var(--bad-soft); color: var(--bad); }
+.pill.warnp { background: var(--target-soft); color: var(--target); }
+
+figure { margin: 22px 0 26px; }
+.fig { background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 14px; overflow-x: auto; }
+.fig svg { display: block; width: 100%; height: auto; min-width: 640px; }
+figcaption { font-size: 14px; color: var(--muted); margin-top: 8px; max-width: 72ch; }
+svg text { font-family: var(--f-body); font-size: 13px; fill: var(--ink); }
+svg .mono { font-family: var(--f-mono); font-size: 12px; }
+svg .lane-h { font: 600 14px var(--f-display); letter-spacing: .04em; }
+svg .small { font-size: 11.5px; fill: var(--muted); }
+svg .life { stroke: var(--line); stroke-width: 2; stroke-dasharray: 4 5; }
+svg .k-box { fill: var(--kernel-soft); stroke: var(--kernel); }
+svg .u-box { fill: var(--user-soft); stroke: var(--user); }
+svg .t-box { fill: var(--target-soft); stroke: var(--target); }
+svg .n-box { fill: var(--surface); stroke: var(--line); }
+svg .bad-box { fill: var(--bad-soft); stroke: var(--bad); }
+svg .a-k { stroke: var(--kernel); stroke-width: 1.6; fill: none; }
+svg .a-u { stroke: var(--user); stroke-width: 1.6; fill: none; }
+svg .a-t { stroke: var(--target); stroke-width: 1.6; fill: none; }
+svg .a-m { stroke: var(--muted); stroke-width: 1.4; fill: none; stroke-dasharray: 5 4; }
+svg .head-k { fill: var(--kernel); } svg .head-u { fill: var(--user); } svg .head-t { fill: var(--target); } svg .head-m { fill: var(--muted); }
+svg .num { font: 600 11px var(--f-mono); fill: var(--muted); }
+
+.grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; margin: 18px 0; }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 14px 16px; min-width: 0; }
+.card h4 { font: 600 15px var(--f-display); margin: 0 0 6px; letter-spacing: .02em; }
+.card p { font-size: 14.5px; margin: 0 0 8px; }
+.card p:last-child { margin-bottom: 0; }
+
+.steps { counter-reset: s; list-style: none; padding: 0; max-width: 72ch; }
+.steps li { counter-increment: s; position: relative; padding-left: 38px; margin-bottom: 12px; }
+.steps li::before { content: counter(s); position: absolute; left: 0; top: 1px; width: 26px; height: 26px; border-radius: 50%;
+  background: var(--kernel-soft); color: var(--kernel); font: 600 13px/26px var(--f-mono); text-align: center; }
+
+details.quiz { background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 12px 16px; margin: 0 0 12px; max-width: 76ch; }
+details.quiz summary { cursor: pointer; font-weight: 600; }
+details.quiz summary:focus-visible { outline: 2px solid var(--kernel); outline-offset: 3px; }
+details.quiz[open] summary { margin-bottom: 8px; }
+details.quiz p:last-child { margin-bottom: 0; }
+
+.side { display: grid; grid-template-columns: 1fr 1fr; gap: 0; font: 13px/1.5 var(--f-mono); background: var(--code-bg); border-radius: 6px; overflow-x: auto; margin-bottom: 16px; }
+.side div { padding: 10px 14px; white-space: pre; min-width: 0; }
+.side div:first-child { border-right: 1px solid var(--line); }
+.side b { font: 600 11px var(--f-display); letter-spacing: .06em; text-transform: uppercase; color: var(--muted); display: block; margin-bottom: 4px; }
+@media (prefers-reduced-motion: no-preference) { html { scroll-behavior: smooth; } }
+</style>
+
+<div class="wrap">
+<nav class="toc" aria-label="Contents">
+  <span class="label">Contents</span>
+  <a href="#overview">The whole trip</a>
+  <a href="#why">Why seccomp</a>
+  <a href="#stopped">Restoring stopped</a>
+  <a href="#attach">Injecting the filter</a>
+  <a href="#roundtrip">One syscall</a>
+  <a href="#decide">Fake, run or stop</a>
+  <a href="#memory">Where bytes go</a>
+  <a href="#fds">Real fds (ADDFD)</a>
+  <a href="#threads">Threads and -S</a>
+  <a href="#boundary">Edges of a generation</a>
+  <a href="#end">The end state</a>
+  <a href="#results">Test results</a>
+  <a href="#redis">A real server: Redis</a>
+  <a href="#nginx">Process trees: nginx</a>
+  <a href="#limits">Limits</a>
+  <a href="#code">Code map</a>
+  <a href="#check">Check yourself</a>
+</nav>
+
+<main>
+<header>
+  <div class="eyebrow">syscall-rr · replay side</div>
+  <h1>Inside sysrr_replay</h1>
+  <p class="lede">How a restored container process is made to relive one recorded generation: every syscall it makes is paused by the kernel, answered from the log, and checked against what the original process did. Companion to the record-side guide, <a href="https://claude.ai/artifact/6ZebwgVF4vFLJRKdhWRsFA">Inside sysrr</a>.</p>
+</header>
+
+<!-- ============================================================ -->
+<section id="overview">
+  <div class="q">Big picture</div>
+  <h2>The whole trip</h2>
+  <p>The recorder ends with a log whose generation&nbsp;1 is everything the live process did after checkpoint&nbsp;1. The replay starts from the checkpoint tarball and that log. Its job is to put the restored process into the state the live one reached, without the outside world (files, network, clock, randomness) being there.</p>
+
+  <figure>
+    <div class="fig">
+    <svg viewBox="0 0 900 250" role="img" aria-label="Pipeline: on machine A the container is recorded and checkpointed; on machine B the checkpoint is restored stopped, sysrr_replay attaches a seccomp listener, resumes the process and answers its syscalls from generation 1 until the end, where it stops, goes live or is killed.">
+      <defs>
+        <marker id="o-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="head-m"/></marker>
+      </defs>
+      <text x="20" y="24" class="lane-h">Machine A (record)</text>
+      <text x="470" y="24" class="lane-h">Machine B (replay)</text>
+      <line x1="450" y1="10" x2="450" y2="240" class="life"/>
+
+      <rect x="20" y="44" width="190" height="62" rx="5" class="t-box"/>
+      <text x="115" y="70" text-anchor="middle">container running</text>
+      <text x="115" y="90" text-anchor="middle" class="small">target process</text>
+
+      <rect x="240" y="44" width="190" height="62" rx="5" class="k-box"/>
+      <text x="335" y="70" text-anchor="middle">sysrr records</text>
+      <text x="335" y="90" text-anchor="middle" class="small">gen 0 · checkpoint · gen 1</text>
+
+      <rect x="20" y="150" width="190" height="62" rx="5" class="n-box"/>
+      <text x="115" y="176" text-anchor="middle" class="mono">ckpt.tar.gz</text>
+      <text x="115" y="196" text-anchor="middle" class="small">state at the checkpoint</text>
+
+      <rect x="240" y="150" width="190" height="62" rx="5" class="n-box"/>
+      <text x="335" y="176" text-anchor="middle" class="mono">rec.log</text>
+      <text x="335" y="196" text-anchor="middle" class="small">gen 1 = what happened next</text>
+
+      <path d="M115,106 L115,146" class="a-m" marker-end="url(#o-arrow)"/>
+      <text x="122" y="131" class="small">podman checkpoint -R</text>
+      <path d="M335,106 L335,146" class="a-m" marker-end="url(#o-arrow)"/>
+
+      <rect x="470" y="44" width="190" height="62" rx="5" class="t-box"/>
+      <text x="565" y="70" text-anchor="middle">restore, left stopped</text>
+      <text x="565" y="90" text-anchor="middle" class="small">CRIU leave-stopped · state T</text>
+
+      <rect x="690" y="44" width="190" height="62" rx="5" class="u-box"/>
+      <text x="785" y="70" text-anchor="middle">attach listener</text>
+      <text x="785" y="90" text-anchor="middle" class="small">ptrace for a few ms</text>
+
+      <rect x="690" y="150" width="190" height="62" rx="5" class="u-box"/>
+      <text x="785" y="176" text-anchor="middle">answer every syscall</text>
+      <text x="785" y="196" text-anchor="middle" class="small">from gen 1, check inputs</text>
+
+      <rect x="470" y="150" width="190" height="62" rx="5" class="bad-box"/>
+      <text x="565" y="176" text-anchor="middle">end state reached</text>
+      <text x="565" y="196" text-anchor="middle" class="small">stop · live · kill</text>
+
+      <path d="M430,181 C 448,181 448,75 466,75" class="a-m" marker-end="url(#o-arrow)"/>
+      <path d="M660,75 L686,75" class="a-m" marker-end="url(#o-arrow)"/>
+      <path d="M785,106 L785,146" class="a-m" marker-end="url(#o-arrow)"/>
+      <text x="792" y="131" class="small">SIGCONT</text>
+      <path d="M690,181 L664,181" class="a-m" marker-end="url(#o-arrow)"/>
+    </svg>
+    </div>
+    <figcaption>The tarball gives the starting state, and the log's generation 1 gives everything the process learned afterwards. The replay never needs the original files, network or clock.</figcaption>
+  </figure>
+
+  <p>The command line, end to end:</p>
+<pre>echo leave-stopped | sudo tee /etc/criu/default.conf     <span class="dim"># for the restore only</span>
+sudo podman container restore --import ckpt.tar.gz --name replayed
+sudo rm /etc/criu/default.conf
+sudo ./sysrr_replay -p $(sudo podman inspect -f '{{.State.Pid}}' replayed) -g 1 rec.log</pre>
+</section>
+
+<!-- ============================================================ -->
+<section id="why">
+  <div class="q">Design choice</div>
+  <h2>Why seccomp user notification</h2>
+  <p>Faking a syscall needs three powers: <em>stop</em> it before the kernel runs it, <em>write</em> the recorded results into the process's memory, and <em>return</em> any value. Only one mechanism on this machine has all three without tracing the process the whole time.</p>
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Mechanism</th><th>Skip the real call?</th><th>Write user memory?</th><th>Verdict here</th></tr></thead>
+    <tbody>
+      <tr><td>eBPF <code>bpf_override_return</code></td><td>Only with <code>CONFIG_FUNCTION_ERROR_INJECTION</code>, which this kernel lacks; and only error-style returns</td><td><code>bpf_probe_write_user</code>: unsafe, taints the kernel</td><td><span class="pill stop">no</span></td></tr>
+      <tr><td>ptrace (like rr, strace)</td><td>Yes</td><td>Yes</td><td><span class="pill warnp">only briefly</span> Two stops per syscall; you rejected it for overhead</td></tr>
+      <tr><td>Launcher that installs seccomp, then <code>execve</code>s</td><td>Yes</td><td>Yes</td><td><span class="pill stop">no</span> A restored process never calls <code>execve</code></td></tr>
+      <tr><td><strong>seccomp <code>RET_USER_NOTIF</code>, injected</strong></td><td>Yes: reply with any value, or <code>CONTINUE</code> to run it</td><td>Yes, from the supervisor, with <code>process_vm_writev</code></td><td><span class="pill run">used</span></td></tr>
+    </tbody>
+  </table>
+  </div>
+  <div class="answer">
+    <p><strong>The one idea to keep:</strong> with a user-notification filter, the kernel turns every syscall into a question to our program: "thread 1 wants <code>read(3, 0x7ffd…, 16)</code>, what happens?" We can answer "it returned 16" after putting 16 recorded bytes at <code>0x7ffd…</code>, and the real <code>read</code> never runs.</p>
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<section id="stopped">
+  <div class="q">Step 1</div>
+  <h2>Restoring the process stopped</h2>
+  <p>If the restored process ran even one syscall before the filter was in place, that syscall would hit the real world and the replay would start out of step. So CRIU must hand the process over frozen.</p>
+  <p>CRIU has a <code>--leave-stopped</code> option, but podman doesn't expose it, and crun drives CRIU through libcriu, not the command line. CRIU does still read <code>/etc/criu/default.conf</code> in that mode. A one-line config therefore does it:</p>
+<pre>$ echo leave-stopped | sudo tee /etc/criu/default.conf
+$ sudo podman container restore --import ckpt.tar.gz --name rrdst
+restored pid 2393: State:	<span class="hl-good">T (stopped)</span></pre>
+  <div class="answer warn">
+    <p><strong>Remove the file right after the restore.</strong> The option also applies to dumps: a later <code>podman checkpoint --leave-running</code> would leave the live container stopped. The test script backs it up, writes it, restores, and puts it back.</p>
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<section id="attach">
+  <div class="q">Step 2</div>
+  <h2>Injecting the filter</h2>
+  <p>A process can only install a seccomp filter on itself. So we make the stopped process call <code>seccomp()</code> as if its own code did, the same trick CRIU uses for its parasite. ptrace is held for a few milliseconds, after CRIU has finished, so nothing conflicts.</p>
+
+  <figure>
+    <div class="fig">
+    <svg viewBox="0 0 780 540" role="img" aria-label="Sequence of attach_listener: seize the stopped target, write syscall and int3 at its instruction pointer, make it run mmap, prctl no_new_privs and seccomp with a new listener, copy the listener fd with pidfd_getfd, clean up with munmap and close which the new filter traps, restore code and registers, detach, then SIGCONT.">
+      <defs>
+        <marker id="a-u" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="head-u"/></marker>
+        <marker id="a-t" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="head-t"/></marker>
+        <marker id="a-k" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="head-k"/></marker>
+      </defs>
+      <rect x="40" y="14" width="150" height="34" rx="5" class="u-box"/><text x="115" y="36" text-anchor="middle" class="lane-h">sysrr_replay</text>
+      <rect x="315" y="14" width="150" height="34" rx="5" class="k-box"/><text x="390" y="36" text-anchor="middle" class="lane-h">kernel</text>
+      <rect x="590" y="14" width="150" height="34" rx="5" class="t-box"/><text x="665" y="36" text-anchor="middle" class="lane-h">restored target</text>
+      <line x1="115" y1="48" x2="115" y2="530" class="life"/>
+      <line x1="390" y1="48" x2="390" y2="530" class="life"/>
+      <line x1="665" y1="48" x2="665" y2="530" class="life"/>
+
+      <!-- rows: y = 84 + 44*i -->
+      <text x="20" y="88" class="num">1</text>
+      <path d="M118,92 L660,92" class="a-u" marker-end="url(#a-u)"/>
+      <text x="390" y="84" text-anchor="middle" class="mono">PTRACE_SEIZE + PTRACE_INTERRUPT, GETREGS</text>
+
+      <text x="20" y="132" class="num">2</text>
+      <path d="M118,136 L660,136" class="a-u" marker-end="url(#a-u)"/>
+      <text x="390" y="128" text-anchor="middle" class="mono">POKEDATA at rip: 0f 05 cc  (syscall; int3)</text>
+
+      <text x="20" y="176" class="num">3</text>
+      <path d="M662,180 L395,180" class="a-t" marker-end="url(#a-t)"/>
+      <text x="528" y="172" text-anchor="middle" class="mono">mmap(4 KiB) → page</text>
+
+      <text x="20" y="220" class="num">4</text>
+      <path d="M118,224 L660,224" class="a-u" marker-end="url(#a-u)"/>
+      <text x="390" y="216" text-anchor="middle" class="mono">process_vm_writev: filter program into page</text>
+
+      <text x="20" y="264" class="num">5</text>
+      <path d="M662,268 L395,268" class="a-t" marker-end="url(#a-t)"/>
+      <text x="528" y="260" text-anchor="middle" class="mono">prctl(NO_NEW_PRIVS)</text>
+
+      <text x="20" y="308" class="num">6</text>
+      <path d="M662,312 L395,312" class="a-t" marker-end="url(#a-t)"/>
+      <text x="528" y="304" text-anchor="middle" class="mono">seccomp(NEW_LISTENER) → fd N</text>
+
+      <text x="20" y="352" class="num">7</text>
+      <path d="M118,356 L385,356" class="a-u" marker-end="url(#a-u)"/>
+      <text x="252" y="348" text-anchor="middle" class="mono">pidfd_getfd(N) → lfd</text>
+
+      <text x="20" y="396" class="num">8</text>
+      <path d="M662,400 L395,400" class="a-t" marker-end="url(#a-t)"/>
+      <text x="528" y="392" text-anchor="middle" class="mono">munmap, close(N)</text>
+      <path d="M385,408 L120,408" class="a-k" marker-end="url(#a-k)"/>
+      <text x="252" y="424" text-anchor="middle" class="small">already trapped: we answer CONTINUE</text>
+
+      <text x="20" y="452" class="num">9</text>
+      <path d="M118,456 L660,456" class="a-u" marker-end="url(#a-u)"/>
+      <text x="390" y="448" text-anchor="middle" class="mono">restore code + regs, PTRACE_DETACH → back to T</text>
+
+      <text x="20" y="502" class="num">10</text>
+      <path d="M118,506 L660,506" class="a-u" marker-end="url(#a-u)"/>
+      <text x="390" y="498" text-anchor="middle" class="mono">kill(SIGCONT)</text>
+    </svg>
+    </div>
+    <figcaption>Blue arrows are syscalls the target makes because we set its registers and let it run up to the <code>int3</code>. From step 6 on, its own syscalls already come to us, which is why step 8 needs an answer.</figcaption>
+  </figure>
+
+  <h3>Details that matter</h3>
+  <ul>
+    <li><strong>One injected syscall</strong> = set <code>rax</code> and the argument registers, set <code>rip</code> to the patched bytes, <code>PTRACE_CONT</code>, wait for the <code>SIGTRAP</code> of the <code>int3</code>, read <code>rax</code>. <code>orig_rax = -1</code> is set so the kernel doesn't treat the stop as an interrupted syscall to restart.</li>
+    <li><strong>Why <code>mmap</code> a page:</strong> the filter program has to be in the target's memory for <code>seccomp()</code> to read it. Writing below the stack pointer looks easier, but the kernel won't grow a stack for a remote write, so that page may not exist.</li>
+    <li><strong>Why <code>NO_NEW_PRIVS</code>:</strong> without <code>CAP_SYS_ADMIN</code> (podman doesn't grant it), the kernel only accepts a filter from a process that has given up setuid gains. The flag stays set for the rest of the process's life.</li>
+    <li><strong>The filter</strong> is seven BPF instructions: every native x86-64 syscall → <code>SECCOMP_RET_USER_NOTIF</code>. <code>TSYNC</code> puts it on every thread at once. It stacks on podman's own filter, and podman's denials (errno or kill) still win over our notification.</li>
+    <li><strong><code>pidfd_getfd</code></strong> copies an fd out of another process's table, like <code>dup</code> across processes. The listener fd now exists in both processes, and the copy in the target is closed in step 8.</li>
+  </ul>
+</section>
+
+<!-- ============================================================ -->
+<section id="roundtrip">
+  <div class="q">Step 3, repeated for every syscall</div>
+  <h2>One syscall, end to end</h2>
+  <p>Here is record <code>#401</code> of the test, a <code>read</code> of 16 random bytes from <code>/dev/urandom</code>, replayed. <code>/dev/urandom</code> is never read; the thread gets exactly the bytes the original process got.</p>
+
+  <figure>
+    <div class="fig">
+    <svg viewBox="0 0 780 400" role="img" aria-label="Round trip of a faked read: the target calls read, the kernel parks it and queues a notification, sysrr_replay receives it, finds the thread's next record, writes the recorded 16 bytes into the buffer and replies with value 16; the kernel returns 16 to the target without running read.">
+      <defs>
+        <marker id="b-u" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="head-u"/></marker>
+        <marker id="b-t" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="head-t"/></marker>
+        <marker id="b-k" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="head-k"/></marker>
+      </defs>
+      <rect x="40" y="14" width="150" height="34" rx="5" class="u-box"/><text x="115" y="36" text-anchor="middle" class="lane-h">sysrr_replay</text>
+      <rect x="315" y="14" width="150" height="34" rx="5" class="k-box"/><text x="390" y="36" text-anchor="middle" class="lane-h">kernel</text>
+      <rect x="590" y="14" width="150" height="34" rx="5" class="t-box"/><text x="665" y="36" text-anchor="middle" class="lane-h">target thread</text>
+      <line x1="115" y1="48" x2="115" y2="392" class="life"/>
+      <line x1="390" y1="48" x2="390" y2="392" class="life"/>
+      <line x1="665" y1="48" x2="665" y2="392" class="life"/>
+
+      <text x="20" y="88" class="num">1</text>
+      <path d="M662,92 L395,92" class="a-t" marker-end="url(#b-t)"/>
+      <text x="528" y="84" text-anchor="middle" class="mono">read(3, 0x7ffd…ce0, 16)</text>
+      <rect x="676" y="100" width="94" height="66" rx="4" class="t-box"/>
+      <text x="723" y="124" text-anchor="middle" class="small">parked in</text>
+      <text x="723" y="140" text-anchor="middle" class="small">the filter,</text>
+      <text x="723" y="156" text-anchor="middle" class="small">read not run</text>
+
+      <text x="20" y="132" class="num">2</text>
+      <path d="M385,136 L120,136" class="a-k" marker-end="url(#b-k)"/>
+      <text x="252" y="128" text-anchor="middle" class="mono">NOTIF_RECV {tid, nr 0, args}</text>
+
+      <text x="20" y="182" class="num">3</text>
+      <rect x="30" y="166" width="300" height="56" rx="4" class="u-box"/>
+      <text x="180" y="188" text-anchor="middle" class="mono">NSpid → ns_tid 1 → queue[1]</text>
+      <text x="180" y="208" text-anchor="middle" class="mono">next: #401 read = 16, OUT 16 B</text>
+
+      <text x="20" y="252" class="num">4</text>
+      <path d="M118,256 L660,256" class="a-u" marker-end="url(#b-u)"/>
+      <text x="390" y="248" text-anchor="middle" class="mono">process_vm_writev(0x7ffd…ce0, recorded 16 B)</text>
+
+      <text x="20" y="300" class="num">5</text>
+      <path d="M118,304 L385,304" class="a-u" marker-end="url(#b-u)"/>
+      <text x="252" y="296" text-anchor="middle" class="mono">NOTIF_SEND {val = 16}</text>
+
+      <text x="20" y="348" class="num">6</text>
+      <path d="M395,352 L660,352" class="a-k" marker-end="url(#b-k)"/>
+      <text x="528" y="344" text-anchor="middle" class="mono">read returns 16</text>
+      <text x="528" y="372" text-anchor="middle" class="small">buffer holds the original bytes</text>
+    </svg>
+    </div>
+    <figcaption>Steps 3 and 4 are where record data becomes replay data: the D_OUT piece of record #401 lands in the thread's buffer. A <code>write</code> takes the same path, except step 3 also <em>reads</em> the thread's buffer and compares it with the recorded D_IN bytes.</figcaption>
+  </figure>
+
+  <p>In code, steps 2 to 5 are <code>supervise()</code> → <code>handle()</code>. The notification and the reply are two small structs passed through <code>ioctl</code> on the listener fd:</p>
+<pre>struct seccomp_notif      { u64 id; u32 pid; u32 flags; struct seccomp_data data; };  <span class="dim">/* data = nr, arch, ip, args[6] */</span>
+struct seccomp_notif_resp { u64 id; s64 val; s32 error; u32 flags; };              <span class="dim">/* flags: CONTINUE = run it */</span></pre>
+  <p><code>pid</code> is the thread id as the supervisor sees it (host namespace). The recorder keyed threads by their id <em>inside</em> the container, which CRIU restores; <code>ns_tid_of()</code> reads the last field of <code>NSpid:</code> in <code>/proc/&lt;tid&gt;/status</code> to translate.</p>
+</section>
+
+<!-- ============================================================ -->
+<section id="decide">
+  <div class="q">The decision</div>
+  <h2>Fake, run, or stop</h2>
+  <p>Each notification is matched against the thread's next record and goes through these checks in order:</p>
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Check</th><th>If it fails</th><th>Why it exists</th></tr></thead>
+    <tbody>
+      <tr><td>syscall number = recorded <code>nr</code></td><td><span class="pill stop">divergence</span></td><td>The process took another code path. Nothing after this can be trusted.</td></tr>
+      <tr><td>arguments = recorded args (up to the call's arg count)</td><td><span class="pill warnp">warning</span></td><td>The restored address space is identical, so even pointers should match. A mismatch is suspicious, but not always fatal.</td></tr>
+      <tr><td>D_IN / D_STR bytes = the thread's memory now</td><td><span class="pill stop">divergence</span> (warning with <code>-c</code>)</td><td>The main detector. A process whose state drifted shows it at the next syscall that hands data to the kernel: the text of a <code>write</code>, a path, an address.</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p>If all checks pass, the syscall is answered one of two ways:</p>
+  <div class="grid2">
+    <div class="card">
+      <h4><span class="pill fake">fake</span> &nbsp;never runs</h4>
+      <p>Anything that brings information in, or has an effect outside the process: <code>read</code>, <code>recv*</code>, <code>clock_gettime</code>, <code>getrandom</code>, <code>stat</code>, <code>poll</code>, <code>write</code>, <code>send*</code>, <code>open</code>, <code>socket</code>, <code>nanosleep</code>, …</p>
+      <p>Recorded D_OUT bytes are written into memory, and the recorded <code>ret</code> (or <code>-errno</code>) is returned. If the call created fds, real ones are installed at the recorded numbers (<a href="#fds">ADDFD</a>).</p>
+    </div>
+    <div class="card">
+      <h4><span class="pill run">run</span> &nbsp;CONTINUE</h4>
+      <p>Calls that change the process itself: <code>mmap</code>, <code>brk</code>, <code>mprotect</code>, <code>munmap</code>, <code>rt_sigaction</code>, <code>rt_sigprocmask</code>, <code>clone</code>, <code>futex</code>, <code>exit_group</code>, <code>getpid</code>, <code>close</code>, <code>chdir</code>, …</p>
+      <p>Faking these would leave the process without the memory, thread or handler it now expects. The list is <code>passthrough()</code>.</p>
+    </div>
+  </div>
+  <div class="answer">
+    <p><strong>Side effect: replay runs faster than real time.</strong> A faked <code>nanosleep</code> returns at once, so the test's 2 seconds of recorded life replay in a few milliseconds. For a failure caused by an outside timeout, that also means time-based behaviour comes only from the recorded clock values, never from the real clock.</p>
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<section id="memory">
+  <div class="q">Placing recorded bytes</div>
+  <h2>Where the bytes go</h2>
+  <p>A data record doesn't store an address. It stores <em>which argument</em> the pointer came from (<code>arg</code>), a sub-buffer number (<code>idx</code>) and an <code>offset</code>. <code>resolve()</code> turns that into an address in the replayed thread, using the arguments of the syscall happening <em>now</em>:</p>
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Record says</th><th>Syscalls</th><th>Address</th></tr></thead>
+    <tbody>
+      <tr><td><code>arg k</code>, idx 0</td><td>read, stat, clock_gettime, …</td><td><code>args[k] + offset</code></td></tr>
+      <tr><td><code>idx i</code></td><td>readv / writev family</td><td><code>iov[i].iov_base + offset</code>, with the iovec read from <code>args[1]</code></td></tr>
+      <tr><td><code>idx 0xffff</code></td><td>iov calls, recvmsg</td><td>the iovec array itself (compared, never written)</td></tr>
+      <tr><td><code>idx 0xfffe / 0xfffd / 0xfffc</code></td><td>recvmsg, sendmsg</td><td>the msghdr / its <code>msg_name</code> / its <code>msg_control</code></td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p>All addresses are resolved <em>before</em> anything is written. Otherwise writing the recorded <code>msghdr</code> first could change the pointers that the later pieces are resolved through.</p>
+  <p>Memory is read with <code>process_vm_readv</code> and written with <code>process_vm_writev</code>. These are the two calls whose results the record guide's question 8 was about: the bytes the recorder copied at <code>sys_exit</code> come back here, byte for byte.</p>
+</section>
+
+<!-- ============================================================ -->
+<section id="fds">
+  <div class="q">Faked opens, real fds</div>
+  <h2>Real file descriptors (ADDFD)</h2>
+  <p>A faked <code>openat(...) = 3</code> returns 3, but nothing is opened: fd 3 does not exist in the replayed process. As long as every later syscall on fd 3 is faked too (<code>read</code>, <code>fstat</code>, <code>close</code>), nobody notices. But some calls run for real. <code>mmap(fd 3)</code> goes to the real kernel, which answers <code>EBADF</code>, and the process takes another path. <code>tests/fd_target</code> does exactly that, and with fd installation turned off (<code>-N</code>) the replay stops at its first line:</p>
+<pre><span class="hl-bad">!! DIVERGENCE in thread 1 at record #510 (9 of 126 for this thread): input buffer differs</span>
+     arg1: 46 of 57 bytes differ, first at byte 11
+       recorded  "iter 8 map=13.7 read=13.7 size=5 f=3 p=4,5 s=6,7 u=8 d=9."
+       replayed  "iter 8 map=EBADF read=13.7 size=5 f=3 p=4,5 s=6,7 u=8 d=9"</pre>
+  <p>The fix is a seccomp feature made for supervisors: <code>SECCOMP_IOCTL_NOTIF_ADDFD</code> copies one of the <em>supervisor's</em> fds into the target's fd table while the target is parked in the notification.</p>
+
+  <figure>
+    <div class="fig">
+    <svg viewBox="0 0 780 310" role="img" aria-label="ADDFD in three steps. The target is parked in openat, recorded to return 3. The supervisor opens the same file inside the container root and gets its own fd 7, then ioctl ADDFD with SETFD and SEND puts that open file at fd 3 in the target and answers openat with 3, then the supervisor closes its fd 7. Later read of fd 3 is faked from the log, mmap of fd 3 runs for real.">
+      <defs>
+        <marker id="f-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="head-m"/></marker>
+      </defs>
+      <text x="20" y="24" class="lane-h">sysrr_replay (host root)</text>
+      <text x="410" y="24" class="lane-h">target, parked in the syscall</text>
+      <line x1="390" y1="10" x2="390" y2="300" class="life"/>
+
+      <rect x="20" y="44" width="350" height="64" rx="5" class="u-box"/>
+      <text x="195" y="68" text-anchor="middle">1. open the same file ourselves</text>
+      <text x="195" y="92" text-anchor="middle" class="mono">openat2(root, path, IN_ROOT) = 7</text>
+
+      <rect x="410" y="44" width="350" height="64" rx="5" class="t-box"/>
+      <text x="585" y="68" text-anchor="middle" class="mono">openat("/etc/debian_version")</text>
+      <text x="585" y="92" text-anchor="middle" class="small">recorded: = 3 · not run</text>
+
+      <rect x="20" y="136" width="350" height="64" rx="5" class="u-box"/>
+      <text x="195" y="160" text-anchor="middle">2. place it at 3 and answer</text>
+      <text x="195" y="184" text-anchor="middle" class="mono">ADDFD(src 7, newfd 3, SETFD|SEND)</text>
+
+      <text x="410" y="140" class="small">fd table</text>
+      <rect x="410" y="148" width="50" height="44" rx="4" class="n-box"/>
+      <text x="435" y="175" text-anchor="middle" class="mono">0</text>
+      <rect x="466" y="148" width="50" height="44" rx="4" class="n-box"/>
+      <text x="491" y="175" text-anchor="middle" class="mono">1</text>
+      <rect x="522" y="148" width="50" height="44" rx="4" class="n-box"/>
+      <text x="547" y="175" text-anchor="middle" class="mono">2</text>
+      <rect x="578" y="148" width="182" height="44" rx="4" class="k-box"/>
+      <text x="669" y="175" text-anchor="middle" class="mono">3: debian_version</text>
+
+      <path d="M370,150 C 450,118 600,118 660,144" class="a-m" marker-end="url(#f-arrow)"/>
+      <text x="500" y="122" class="small">same open file</text>
+
+      <rect x="20" y="228" width="350" height="64" rx="5" class="n-box"/>
+      <text x="195" y="252" text-anchor="middle">3. drop our copy</text>
+      <text x="195" y="276" text-anchor="middle" class="mono">close(7)</text>
+
+      <rect x="410" y="228" width="350" height="64" rx="5" class="t-box"/>
+      <text x="585" y="252" text-anchor="middle">openat returns 3</text>
+      <text x="585" y="276" text-anchor="middle" class="small">read(3): faked from the log · mmap(3): real, works</text>
+    </svg>
+    </div>
+    <figcaption>One ioctl both installs the fd at the recorded number and answers the syscall. The data still comes from the log; the fd only has to be real for the syscalls that run for real.</figcaption>
+  </figure>
+
+  <ul>
+    <li><strong><code>SETFD</code></strong> places the fd at exactly <code>newfd</code>, replacing whatever was there, like <code>dup2</code>. Without it the kernel would pick the lowest free number, which might not be the recorded one.</li>
+    <li><strong><code>SEND</code></strong> answers the syscall with that number in the same step. Without it there would be a moment where the fd exists but the syscall is still pending.</li>
+    <li><strong>Two numbers</strong> (<code>pipe</code>, <code>socketpair</code>) come back through memory, not the return value: two ADDFDs without SEND, at the numbers in the recorded <code>int[2]</code>, then the normal reply.</li>
+  </ul>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Recorded call</th><th>What gets installed</th></tr></thead>
+    <tbody>
+      <tr><td><code>open</code>, <code>openat</code>, <code>openat2</code>, <code>creat</code></td><td>The same path, opened by the supervisor inside the container's root. <code>O_CREAT</code> and <code>O_TRUNC</code> are dropped (no side effects). Read-only if write is refused; <code>/dev/null</code> if the file doesn't exist here.</td></tr>
+      <tr><td><code>socket</code></td><td>A socket of the same domain and type, made in the supervisor's network namespace. It is never connected; its traffic is faked anyway.</td></tr>
+      <tr><td><code>accept</code>, <code>accept4</code></td><td>An unconnected socket like the listening one (its domain, type and protocol are read through <code>pidfd_getfd</code>).</td></tr>
+      <tr><td><code>pipe</code>, <code>pipe2</code>, <code>socketpair</code></td><td>A fresh pipe or socket pair, both ends.</td></tr>
+      <tr><td><code>dup</code>, <code>dup2</code>, <code>dup3</code>, <code>fcntl(F_DUPFD)</code></td><td>The target's own source fd, copied with <code>pidfd_getfd</code>: the same open file, as a real dup would give.</td></tr>
+      <tr><td><code>eventfd</code>, <code>epoll_create</code>, <code>timerfd_create</code>, <code>memfd_create</code>, <code>inotify_init</code></td><td>A fresh object of that kind (a memfd stays empty: its writes were faked).</td></tr>
+      <tr><td>anything else that returns an fd</td><td><code>/dev/null</code></td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p>The close-on-exec flag is taken from each call's own flag argument (<code>O_CLOEXEC</code>, <code>SOCK_CLOEXEC</code>, <code>MFD_CLOEXEC</code>, …). <code>-v</code> prints one line per installed fd: <code>fd 3 &lt;- file /etc/debian_version (cloexec)</code>.</p>
+
+  <div class="answer">
+    <p><strong>Why <code>close</code> now runs for real.</strong> Before ADDFD, <code>close</code> was faked: there was nothing to close. Now every faked open leaves a real fd, so a faked close would leave it open, and the target's fd table would fill up with fds the recording had already closed. So <code>close</code> and <code>close_range</code> run for real, and the table follows the recording. If a number is already taken when an fd is about to be installed there, the two tables have drifted apart, and the replay prints a warning. For the same reason, <code>chdir</code> and <code>fchdir</code> now run for real: a relative <code>open</code> is resolved against the target's real working directory.</p>
+  </div>
+  <div class="answer">
+    <p><strong>Why <code>RESOLVE_IN_ROOT</code>.</strong> The supervisor runs as root on the host. It opens <code>/etc/x</code> relative to <code>/proc/PID/root</code>, the container's root directory. Without a guard, an absolute symlink inside the container, such as <code>/etc/x → /etc/shadow</code>, would be followed on the host, and the host's file would be handed to the container. <code>openat2</code> with <code>RESOLVE_IN_ROOT</code> makes <code>/</code>, <code>..</code> and absolute symlinks stay inside the given directory, and <code>RESOLVE_NO_MAGICLINKS</code> refuses <code>/proc/*/fd</code>-style jumps.</p>
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<section id="threads">
+  <div class="q">Multi-threaded targets</div>
+  <h2>Threads, and strict order with -S</h2>
+  <p>The log is split into one queue per <code>ns_tid</code>, each in <code>seq</code> order. By default each thread just follows its own queue. That gives every thread the right <em>results</em>, but not the right <em>timing</em> relative to the other threads.</p>
+  <p>With <code>-S</code>, a thread's syscall is answered only when its record is the globally next <code>seq</code>. A thread that arrives early is <em>parked</em>: its notification stays unanswered, so the thread waits in the kernel.</p>
+
+  <figure>
+    <div class="fig">
+    <svg viewBox="0 0 780 230" role="img" aria-label="Strict order: thread B's read arrives while thread A's write, which has an earlier seq, is still pending. B is parked until A's write is answered, so A's update of shared state happens before B's.">
+      <defs>
+        <marker id="c-m" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="head-m"/></marker>
+        <marker id="c-k" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="head-k"/></marker>
+      </defs>
+      <text x="20" y="26" class="small">recorded seq →</text>
+      <text x="155" y="26" text-anchor="middle" class="num">#100</text>
+      <text x="275" y="26" text-anchor="middle" class="num">#101</text>
+      <text x="395" y="26" text-anchor="middle" class="num">#102</text>
+      <text x="515" y="26" text-anchor="middle" class="num">#103</text>
+      <text x="635" y="26" text-anchor="middle" class="num">#104</text>
+
+      <text x="20" y="74" class="lane-h">thread A</text>
+      <line x1="100" y1="70" x2="760" y2="70" class="life"/>
+      <rect x="110" y="52" width="90" height="36" rx="4" class="t-box"/><text x="155" y="75" text-anchor="middle" class="mono">read</text>
+      <rect x="230" y="52" width="90" height="36" rx="4" class="t-box"/><text x="275" y="75" text-anchor="middle" class="mono">write</text>
+      <rect x="590" y="52" width="90" height="36" rx="4" class="t-box"/><text x="635" y="75" text-anchor="middle" class="mono">sleep</text>
+      <text x="215" y="108" text-anchor="middle" class="small">acc updated</text>
+      <path d="M200,98 L230,98" class="a-k" marker-end="url(#c-k)"/>
+
+      <text x="20" y="164" class="lane-h">thread B</text>
+      <line x1="100" y1="160" x2="760" y2="160" class="life"/>
+      <rect x="110" y="142" width="90" height="36" rx="4" class="n-box" stroke-dasharray="4 3"/><text x="155" y="165" text-anchor="middle" class="mono">read?</text>
+      <text x="155" y="198" text-anchor="middle" class="small">arrives early: parked</text>
+      <path d="M204,160 L346,160" class="a-m" marker-end="url(#c-m)"/>
+      <rect x="350" y="142" width="90" height="36" rx="4" class="t-box"/><text x="395" y="165" text-anchor="middle" class="mono">read</text>
+      <rect x="470" y="142" width="90" height="36" rx="4" class="t-box"/><text x="515" y="165" text-anchor="middle" class="mono">write</text>
+      <text x="455" y="198" text-anchor="middle" class="small">acc updated, after A's</text>
+    </svg>
+    </div>
+    <figcaption>Seq numbers are illustrative. Because B is held at its <code>read</code> until A's <code>write</code> (#101) has been answered, A's update of the shared accumulator (between its #100 and #101) is done before B's starts.</figcaption>
+  </figure>
+
+  <p><code>tests/mt_target.c</code> is built to show this. Two threads share an accumulator updated with an atomic compare-and-swap (no lock, so no syscall), and every printed line depends on which thread updated last:</p>
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Mode</th><th>Result</th></tr></thead>
+    <tbody>
+      <tr><td>per thread (default)</td><td><span class="pill stop">diverged</span> at record #889: <code>T0 iter 54 acc 7b4c585d…</code> recorded, <code>137a35ce…</code> replayed. B overtook A because faked sleeps return at once.</td></tr>
+      <tr><td><code>-S</code></td><td><span class="pill run">pass</span> 274 of 274 records in 3 threads, all 92 printed lines identical to the live process.</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <div class="answer warn">
+    <p><strong>What -S does not control:</strong> it orders syscall <em>entries</em>, and therefore any user-space work that lies between two syscalls of one thread. Two threads racing in user space with no syscall between their accesses (the classic data race) still interleave however the CPU schedules them. For your goal of explaining a failure, a replay that diverges under <code>-S</code> exactly where a shared value is printed is itself a hint that such a race exists.</p>
+  </div>
+  <p>Threads created during the replay can get other ids than they had in the recording, because the restored pid namespace hands out ids its own way. Each recorded <code>clone</code> result is queued, and the next unknown thread to make a syscall is matched to it (<code>thread_for()</code>).</p>
+</section>
+
+<!-- ============================================================ -->
+<section id="boundary">
+  <div class="q">Edge cases</div>
+  <h2>The edges of a generation</h2>
+  <ul>
+    <li><strong>The start lines up by construction.</strong> From the record guide: a syscall the checkpoint interrupted is either re-run by both processes (the first record of gen&nbsp;1) or turned into <code>-EINTR</code> for both. The restored process starts exactly where gen&nbsp;1 starts.</li>
+    <li><strong>Signal-interrupted records are skipped.</strong> A record whose <code>ret</code> is <code>-512 … -516</code> (ERESTARTSYS and friends) means a signal interrupted the call in the live run, and the call was then issued again. The replay delivers no signals, so its thread makes the call once. Those records are dropped when the log is loaded, and so is a <code>restart_syscall</code> the replayed thread never makes.</li>
+    <li><strong>The end of the test's recording</strong> is such a record: <code>podman pause</code> froze the live process inside <code>nanosleep</code> (-516). So 44 records in gen&nbsp;1 became 43 to replay.</li>
+    <li><strong>The clock.</strong> <code>clock_gettime</code> must be a real syscall to be faked. The vDSO answers it in user space otherwise, so the replay machine needs the same <code>acpi_pm</code> clocksource trick as the recording. The tests switch it on and back.</li>
+  </ul>
+</section>
+
+<!-- ============================================================ -->
+<section id="end">
+  <div class="q">Reaching the goal</div>
+  <h2>The end state</h2>
+  <p>When a thread's queue is empty, its next syscall is held, unanswered. When every record has been consumed, the process is in the state the live one was in when the recording stopped, frozen at the entry of its next syscall. <code>-e</code> decides what happens then:</p>
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>-e</th><th>Effect</th><th>Use it to</th></tr></thead>
+    <tbody>
+      <tr><td><code>stop</code> (default)</td><td>SIGSTOP. The tool keeps running until Ctrl-C.</td><td>Inspect the reached state: <code>gdb -p</code>, <code>/proc/PID/</code>. In the test, <code>/proc/PID/syscall</code> showed <code>230</code>, the <code>clock_nanosleep</code> right after the last recorded call.</td></tr>
+      <tr><td><code>live</code></td><td>Answer CONTINUE from now on: real syscalls.</td><td>Let the process carry on from the reached state. The restored container printed <code>iter 22, 23, …</code> for real; the live one had stopped at 21.</td></tr>
+      <tr><td><code>kill</code></td><td>SIGKILL, exit.</td><td>Scripts and tests.</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p>A divergence ends the replay the same way. It prints the expected and actual call, the first differing byte, and the thread's last five replayed syscalls, then applies <code>-e</code>. With <code>stop</code>, the diverging thread is frozen at the syscall that showed the difference.</p>
+  <div class="answer warn">
+    <p><strong>The filter cannot be removed.</strong> If the tool exits, every later syscall of the target fails with <code>ENOSYS</code>. So keep it running while you inspect, even in <code>stop</code> mode. For the same reason, CRIU cannot checkpoint the replayed process again.</p>
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<section id="results">
+  <div class="q">Evidence</div>
+  <h2>Test results</h2>
+  <h3>Positive: the restored copy relives generation 1</h3>
+  <p><code>tests/test_replay.sh</code>: <code>ckpt_target</code> runs in container A and is recorded. The test checkpoints it with <code>--leave-running</code>, lets it run 2 s, then freezes it with <code>podman pause</code>, so its output ends where the recording ends. The checkpoint is restored stopped as container B and replayed with <code>-w</code>, which saves what B tries to write to stdout.</p>
+<pre>replaying generation 1: 43 syscalls in 1 thread(s), recorded from ckpt_target
+seccomp listener attached to 2393; resuming it
+   thread 1 reached the end of its recording; next it calls clock_nanosleep(0, 0, 0x7ffd60525d00, 0)
+
+== end of the recording reached ==
+   replayed 43 syscalls (faked 43, ran 0), skipped 1 interrupted/restart records
+   inputs checked 479 bytes, outputs injected 352 bytes, warnings: 0 args, 0 inputs</pre>
+  <div class="side" role="group" aria-label="Live output versus replayed output">
+    <div><b>live process A</b>iter 11 acc b391acf817c3055c
+iter 12 acc bae8252b9a7171f0
+iter 13 acc 52036b9c333614b1
+…
+iter 21 acc a01e5549c7f46219</div>
+    <div><b>replayed process B</b>iter 11 acc b391acf817c3055c
+iter 12 acc bae8252b9a7171f0
+iter 13 acc 52036b9c333614b1
+…
+iter 21 acc a01e5549c7f46219</div>
+  </div>
+  <p>All 11 lines are identical. Each line folds 16 random bytes and a nanosecond clock reading into a 64-bit hash, so a single wrong byte anywhere would show.</p>
+
+  <h3>Negative: one flipped byte is caught</h3>
+  <p>The same checkpoint is restored again, and replayed with a copy of the log in which <code>tests/tamper_log.py</code> flipped one byte of the 4th recorded <code>read</code>:</p>
+<pre>read #3 (seq 409): byte 0x7c -> 0x83
+
+<span class="hl-bad">!! DIVERGENCE in thread 1 at record #411 (15 of 44 for this thread): input buffer differs</span>
+     expected  write(0x1, 0x7fff6da43f50, 0x1d) = 29
+     actual    write(0x1, 0x7fff6da43f50, 0x1d)
+     arg1: 16 of 29 bytes differ, first at byte 12
+       recorded  "iter 14 acc d07bf64db6f71d3b."
+       replayed  "iter 14 acc 6aca0a7e3ce8c268."
+     last replayed syscalls of this thread:
+       #406 clock_gettime(0, 0x7fff6da43f30) = 0
+       #407 write(0x1, 0x7fff6da43f50, 0x1d) = 29
+       #408 clock_nanosleep(0, 0, 0x7fff6da43f40, 0) = 0
+       #409 read(0x3, 0x7fff6da43f20, 0x10) = 16      <span class="dim">← the tampered input</span>
+       #410 clock_gettime(0, 0x7fff6da43f30) = 0</pre>
+  <p>The bad byte went in at #409 and showed up two syscalls later, at the first <code>write</code> that depends on it. That is how divergence detection works in general: a wrong input is invisible until the process hands something derived from it back to the kernel. The listing of recent syscalls is there to help find the cause.</p>
+
+  <h3>File descriptors: fd_target</h3>
+  <p><code>TARGET=fd_target tests/test_replay.sh</code>. After the checkpoint, every iteration opens a file, reads it (faked), <code>mmap</code>s it (real), creates a pipe, a socketpair, a UDP socket and a <code>dup</code>, prints the fd numbers and the mapped bytes, then closes everything (real).</p>
+<pre>replaying generation 1: 125 syscalls in 1 thread(s), recorded from fd_target
+         fd 3 &lt;- file /etc/debian_version (cloexec)
+         fd 4 &lt;- pipe (cloexec)
+         fd 5 &lt;- pipe (cloexec)
+         fd 6 &lt;- socketpair (cloexec)
+         fd 7 &lt;- socketpair (cloexec)
+         fd 8 &lt;- socket(2, 2) (cloexec)
+         fd 9 &lt;- copy of fd 3
+         <span class="dim">… 7 iterations …</span>
+== end of the recording reached ==
+   replayed 125 syscalls (faked 62, ran 63), skipped 1 interrupted/restart records
+   fds installed 49, fd warnings 0</pre>
+  <p>All 7 lines are identical to the live process, <code>map=13.7</code> included: the mapped bytes are read from the real file in the restored container. The negative run with <code>-N</code> is the divergence shown in <a href="#fds">Real file descriptors</a>.</p>
+
+  <h3>Across machines</h3>
+  <p><code>REMOTE=claude-test tests/test_replay.sh</code> records and checkpoints on claude-dev, then copies the checkpoint, the log, <code>sysrr_replay</code> and the tests directory to claude-test (same path, because the container bind-mounts it), restores there and replays over ssh. Both machines: Debian 13, podman 5.4.2, CRIU 4.1.1, the same CPU model; kernels 6.12.113 and 6.12.115.</p>
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Target</th><th>Restored and replayed on claude-test</th><th>Negative test there</th></tr></thead>
+    <tbody>
+      <tr><td><code>ckpt_target</code></td><td>43 replayed, 11/11 lines identical</td><td>tampered byte caught after 3 good lines</td></tr>
+      <tr><td><code>mt_target -S</code></td><td>274 replayed, 92/92 lines identical</td><td>(none)</td></tr>
+      <tr><td><code>fd_target</code></td><td>125 replayed, 49 fds installed, 7/7 identical</td><td><code>-N</code>: <code>map=EBADF</code> at the first line</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <div class="answer">
+    <p><strong>The trap on a fresh machine.</strong> The first restore on claude-test failed inside CRIU: <code>can't write lsm profile -2</code>, then a segfault in the restorer. The process was dumped while confined by podman's AppArmor profile <code>containers-default-0.62.2</code>, and CRIU restores that confinement. But podman loads the profile into the kernel only when it <em>starts</em> a container, and a restore doesn't start one. On a machine that hasn't run a container since boot, the profile doesn't exist (<code>-2</code> = <code>ENOENT</code>). One throwaway <code>podman run --rm IMAGE true</code> loads it; the test now does that before restoring.</p>
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<section id="redis">
+  <div class="q">Beyond toy targets</div>
+  <h2>A real server: Redis</h2>
+  <p><code>tests/test_redis.sh</code> runs <code>redis:7</code>, which has six threads: the event loop, three <code>bio_*</code> background threads and two <code>jemalloc_bg_thd</code>. It loads 200 keys and checkpoints. Then <code>redis-benchmark</code> sends SET / GET / INCR / LPUSH on 1000 random keys from 20 concurrent clients, followed by a few <code>redis-cli</code> commands. Finally it takes <code>DEBUG DIGEST</code>, a hash of the whole dataset.</p>
+  <p>The restored copy is replayed with <code>-S -e live</code>. No client ever talks to it: every <code>accept</code>, <code>read</code> and <code>epoll_wait</code> of those 20 clients is answered from the log. Once the recording is used up, the copy runs for real, and its own <code>DEBUG DIGEST</code> must equal the live server's.</p>
+<pre>replaying generation 1: 61531 syscalls in 6 thread(s), recorded from redis-server
+== end of the recording reached ==
+   replayed 61531 syscalls (faked 61413, ran 118), skipped 5 interrupted/restart records
+   inputs checked 74355 bytes, outputs injected 1198481 bytes, warnings: 0 args, 0 inputs
+   fds installed 114, fd warnings 0, mappings pinned 1
+live A:     dbsize 2113, digest 6573a7a19899405464c59ac3d4445cae1257f5ab
+replayed B: dbsize 2113, digest 6573a7a19899405464c59ac3d4445cae1257f5ab   <span class="dim">(on claude-test)</span></pre>
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Run</th><th>Result</th></tr></thead>
+    <tbody>
+      <tr><td>claude-dev → claude-dev</td><td>PASS, digest identical</td></tr>
+      <tr><td>claude-dev → claude-test, <code>-S</code></td><td>5 of 5 PASS, digest identical</td></tr>
+      <tr><td>claude-dev → claude-test, no <code>-S</code></td><td>3 of 4 PASS; one run diverged (below)</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p>The first attempts failed in three new ways. Each failure exposed something the toy targets never exercised.</p>
+
+  <h3>1. New mappings land somewhere else</h3>
+<pre><span class="hl-bad">!! DIVERGENCE in thread 1 at record #5152: different syscall</span>
+     expected  read(0x1b, 0x7faebad7b005, 0x4000) = 45
+     actual    mmap(0, 0x600000, 0x3)
+       #5151 mmap(0, 0x280000, 0x3) = 140388435734528     <span class="dim">← ran for real</span></pre>
+  <p><code>mmap</code> runs for real, and with no address given, the kernel picks the highest free gap below <code>mm-&gt;mmap_base</code>. That base is randomized at <code>execve</code>. CRIU restores every existing mapping at its old address, but it cannot restore <code>mmap_base</code>, so the restored process keeps CRIU's. #5151 therefore got a different address than in the recording. jemalloc wants its chunks aligned. The new address wasn't aligned, so it mapped a larger region (<code>0x600000</code>) to trim, instead of continuing to the recorded <code>read</code>.</p>
+  <p>seccomp can't change a syscall's arguments, but ptrace can, for that one call:</p>
+
+  <figure>
+    <div class="fig">
+    <svg viewBox="0 0 780 300" role="img" aria-label="Pinning a mapping. The thread is parked in mmap with address 0. The replay seizes and interrupts it; the seccomp wait returns ERESTARTSYS and the thread stops before returning to user space. The replay sets rdi to the recorded address and adds MAP_FIXED_NOREPLACE, then detaches. The kernel restarts the syscall with these registers, it comes back as a new notification with the pinned address, and the replay lets it run.">
+      <defs>
+        <marker id="p-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="head-m"/></marker>
+      </defs>
+      <text x="20" y="24" class="lane-h">sysrr_replay</text>
+      <text x="410" y="24" class="lane-h">redis thread</text>
+      <line x1="390" y1="10" x2="390" y2="290" class="life"/>
+
+      <rect x="410" y="40" width="350" height="50" rx="5" class="t-box"/>
+      <text x="585" y="62" text-anchor="middle" class="mono">mmap(0, 0x280000, ...)</text>
+      <text x="585" y="80" text-anchor="middle" class="small">parked in the notification · recorded = R</text>
+
+      <rect x="20" y="104" width="350" height="50" rx="5" class="u-box"/>
+      <text x="195" y="126" text-anchor="middle">1. don't answer: seize + interrupt</text>
+      <text x="195" y="144" text-anchor="middle" class="mono">PTRACE_SEIZE, PTRACE_INTERRUPT</text>
+
+      <rect x="410" y="104" width="350" height="50" rx="5" class="k-box"/>
+      <text x="585" y="126" text-anchor="middle">wait returns -ERESTARTSYS</text>
+      <text x="585" y="144" text-anchor="middle" class="small">stops before user space · rax=-512</text>
+
+      <rect x="20" y="168" width="350" height="50" rx="5" class="u-box"/>
+      <text x="195" y="190" text-anchor="middle">2. rewrite the arguments, detach</text>
+      <text x="195" y="208" text-anchor="middle" class="mono">rdi=R  r10|=MAP_FIXED_NOREPLACE</text>
+
+      <rect x="410" y="168" width="350" height="50" rx="5" class="k-box"/>
+      <text x="585" y="190" text-anchor="middle">kernel restarts the syscall</text>
+      <text x="585" y="208" text-anchor="middle" class="small">from the registers as they are now</text>
+
+      <rect x="20" y="232" width="350" height="50" rx="5" class="u-box"/>
+      <text x="195" y="254" text-anchor="middle">3. new notification: let it run</text>
+      <text x="195" y="272" text-anchor="middle" class="mono">CONTINUE</text>
+
+      <rect x="410" y="232" width="350" height="50" rx="5" class="t-box"/>
+      <text x="585" y="254" text-anchor="middle" class="mono">mmap(R, 0x280000, ...|FIXED_NR)</text>
+      <text x="585" y="272" text-anchor="middle" class="small">= R, as in the recording</text>
+
+      <path d="M370,129 L406,129" class="a-m" marker-end="url(#p-arrow)"/>
+      <path d="M370,193 L406,193" class="a-m" marker-end="url(#p-arrow)"/>
+      <path d="M406,257 L374,257" class="a-m" marker-end="url(#p-arrow)"/>
+    </svg>
+    </div>
+    <figcaption>The interrupt turns the parked syscall into a restartable one, and a restart re-reads the registers, so changing them changes the arguments. <code>MAP_FIXED_NOREPLACE</code> never overwrites an existing mapping.</figcaption>
+  </figure>
+  <p>This uses ptrace again, but on one thread, for one syscall, after CRIU is done: a few hundred microseconds per new mapping. A Redis run pins one or two. <code>mremap</code> that moved a mapping is pinned the same way (<code>MREMAP_FIXED</code>, with the address in <code>r8</code>).</p>
+
+  <h3>2. A thread with nothing recorded</h3>
+<pre><span class="hl-bad">!! DIVERGENCE: thread 6 (host 8772) is not in the recording; it calls futex(0x5594b55033e8, 0x189, 0)</span></pre>
+  <p>Thread 6 is <code>bio_close_file</code>. It waited on a condition variable through the whole recorded period. A syscall that never returns is never recorded, so in some runs that thread has no record at all in generation 1. It is not a new thread. Now, when the tool attaches, every existing thread without records gets an empty queue, so its first syscall is held: it stays blocked, exactly as in the recording. Only threads created <em>during</em> the replay are "not in the recording".</p>
+
+  <h3>3. Without -S, a lock taken in another order</h3>
+<pre><span class="hl-bad">!! DIVERGENCE in thread 9 at record #34123 (2 of 5 for this thread): different syscall</span>
+     expected  gettimeofday(0x7f5403ffb320, 0) = 0
+     actual    futex(0x7f54062168f8, 0x80, 0x2)            <span class="dim">FUTEX_WAIT_PRIVATE: a held mutex</span></pre>
+  <p>A <code>jemalloc_bg_thd</code> woke up and found the arena mutex taken by the event loop, which had raced ahead of its recorded position. An uncontended mutex makes no syscall; a contended one does. So a different interleaving shows up as an extra <code>futex</code>. This is the mt_target lesson on a real program: with <code>-S</code>, the event loop is parked at its next syscall until the background thread's turn, and all 5 runs passed. <code>test_redis.sh</code> uses <code>-S</code> by default.</p>
+  <div class="answer">
+    <p><strong>Practical traps hit on the way.</strong> The Redis image declares <code>VOLUME /data</code>. Removing the source container without <code>-v</code> leaves an anonymous volume behind, and the restore then fails with "volume … already exists". The throwaway container that loads the AppArmor profile now runs with <code>--image-volume ignore</code>. And <code>ssh host "cmd &gt; f &amp;"</code> keeps the ssh connection open until <code>cmd</code> exits, which in live mode is never, so the script starts the replay with <code>setsid -f</code>.</p>
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<section id="nginx">
+  <div class="q">More than one process</div>
+  <h2>Process trees: nginx and -T</h2>
+  <p><code>tests/test_nginx.sh</code> runs nginx with a master and two worker processes, using its own <code>tests/nginx/nginx.conf</code>. Each access-log line carries <code>$request_id</code> (from nginx's PRNG state in memory), <code>$msec</code> (the clock), <code>$pid</code> (which worker) and <code>$connection</code>. After the checkpoint, 220 requests arrive over 8 parallel keep-alive connections. The replayed tree must write the same log lines, and afterwards serve real requests.</p>
+
+  <h3>One filter per process</h3>
+  <p>A seccomp filter belongs to the process that installs it, with all its threads (<code>TSYNC</code>), and to children it forks <em>later</em>. The workers already exist when the checkpoint is restored, so the replay walks the tree under <code>-p</code> (parent links in <code>/proc</code>; CRIU left every process stopped) and injects a filter into each one before any of them resumes:</p>
+<pre>replaying generation 1: 2401 syscalls in 3 thread(s), recorded from nginx
+seccomp listener attached to 3 process(es): 33504 33516 33517; resuming
+== end of the recording reached ==
+   replayed 2401 syscalls (faked 2004, ran 397), skipped 1 interrupted/restart records
+   fds installed 127, fd warnings 0, mappings pinned 0</pre>
+  <p>The supervisor polls all three listeners and answers each notification on the listener it came from. It uses the right process's pidfd for <code>pidfd_getfd</code>, and stops, continues or kills every process. The queues were already per container tid, so they needed no change. On the recording side, <code>sysrr -f</code> now also adds the processes that already exist under <code>-p</code>, not only later forks.</p>
+
+  <h3>A race with no syscall in it</h3>
+<pre><span class="hl-bad">!! DIVERGENCE in thread 25 at record #1486 (63 of 879 for this thread): input buffer differs</span>
+     expected  write(0x5, 0x55e5704a14b0, 0x6a) = 106
+     arg1: 1 of 106 bytes differ, first at byte 102          <span class="dim">← the conn= number</span></pre>
+  <p>nginx's <code>$connection</code> is <code>ngx_connection_counter</code>, an atomic counter in a <code>MAP_SHARED</code> page the master created before forking. Each worker increments it right after <code>accept4</code> returns, in user space, with no syscall. With <code>-S</code>, 1 run in 3 on claude-test diverged here; without it, 2 of 2 did.</p>
+
+  <figure>
+    <div class="fig">
+    <svg viewBox="0 0 780 300" role="img" aria-label="Two timelines for workers A and B. Under -S, A's accept4 is answered, and B's accept4 is released while A still runs user code, so both increment the shared counter in an uncontrolled order. Under -T, B's accept4 is released only after A has reached its next syscall, so A's increment happens first, as in the recording where A's accept4 returned first.">
+      <defs>
+        <marker id="t-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="head-m"/></marker>
+      </defs>
+      <text x="20" y="24" class="lane-h">-S: entries in order, user code overlaps</text>
+      <text x="20" y="54" class="mono">worker A</text>
+      <text x="20" y="104" class="mono">worker B</text>
+      <rect x="110" y="38" width="90" height="26" rx="4" class="u-box"/>
+      <text x="155" y="56" text-anchor="middle" class="mono">accept4</text>
+      <rect x="200" y="38" width="210" height="26" rx="4" class="t-box"/>
+      <text x="305" y="56" text-anchor="middle" class="small">user code: counter++ …</text>
+      <rect x="230" y="88" width="90" height="26" rx="4" class="u-box"/>
+      <text x="275" y="106" text-anchor="middle" class="mono">accept4</text>
+      <rect x="320" y="88" width="210" height="26" rx="4" class="t-box"/>
+      <text x="425" y="106" text-anchor="middle" class="small">user code: counter++ …</text>
+      <rect x="320" y="38" width="90" height="76" rx="4" class="bad-box" fill-opacity="0.35"/>
+      <text x="560" y="72" class="small">overlap: who increments first</text>
+      <text x="560" y="88" class="small">is up to the CPUs</text>
+
+      <line x1="20" y1="140" x2="760" y2="140" class="life"/>
+
+      <text x="20" y="166" class="lane-h">-T: one runs at a time, in recorded return order</text>
+      <text x="20" y="196" class="mono">worker A</text>
+      <text x="20" y="246" class="mono">worker B</text>
+      <rect x="110" y="180" width="90" height="26" rx="4" class="u-box"/>
+      <text x="155" y="198" text-anchor="middle" class="mono">accept4</text>
+      <rect x="200" y="180" width="210" height="26" rx="4" class="t-box"/>
+      <text x="305" y="198" text-anchor="middle" class="small">user code: counter++ …</text>
+      <rect x="410" y="180" width="70" height="26" rx="4" class="n-box"/>
+      <text x="445" y="198" text-anchor="middle" class="mono">next</text>
+      <rect x="230" y="230" width="180" height="26" rx="4" class="n-box"/>
+      <text x="320" y="248" text-anchor="middle" class="small">parked at accept4</text>
+      <rect x="410" y="230" width="90" height="26" rx="4" class="u-box"/>
+      <text x="455" y="248" text-anchor="middle" class="mono">accept4</text>
+      <rect x="500" y="230" width="210" height="26" rx="4" class="t-box"/>
+      <text x="605" y="248" text-anchor="middle" class="small">user code: counter++ …</text>
+      <path d="M410,208 L410,226" class="a-m" marker-end="url(#t-arrow)"/>
+      <text x="420" y="222" class="small">A reached a syscall: release B</text>
+      <text x="20" y="288" class="small">Order of release = order the recorded syscalls returned (ts_exit); A's accept4 returned first live.</text>
+    </svg>
+    </div>
+    <figcaption>-S fixes the order of syscall entries, not what runs between them. -T lets one thread run user code at a time, so the stretches of user code between syscalls run one after the other, in the order they started live.</figcaption>
+  </figure>
+  <p>A thread counts as running from the moment its syscall is answered until its next syscall reaches the supervisor. It doesn't count while it waits in a real blocking call (futex wait, <code>rt_sigsuspend</code>, <code>wait4</code>, exit). If a running thread doesn't come back within 2 seconds, the replay stops waiting for it, so a blocking call missing from that list can't freeze everything. With <code>-T</code>, nginx passed every run on claude-test, and Redis and mt_target pass too. It's still not a full guarantee. Two stretches that overlapped live now run one after the other, ordered by their start; if the live outcome was decided by nanoseconds <em>inside</em> both, the replay can still pick the other one.</p>
+
+  <h3>The log order across workers is not the syscall order</h3>
+  <p>Even in passing runs, a few lines from <em>different</em> workers sometimes appear in the other order than in the live log. The replay's <code>-w</code> capture follows the recorded order in which the workers <em>entered</em> <code>write</code>. The live log shows the order in which those writes <em>landed</em> in the shared stdout pipe. Two workers writing within microseconds of each other can land the other way round. So the test checks that each worker's own lines are identical and in the same order, and that the set of all lines is identical.</p>
+
+  <h3>Two recorder bugs this target exposed</h3>
+  <ul>
+    <li><strong>The empty-string quirk.</strong> nginx's image has an older glibc, whose <code>fstat()</code> is <code>newfstatat(fd, "", buf, AT_EMPTY_PATH)</code>. <code>bpf_probe_read_user_str()</code> returns the length including the NUL (<code>"abc"</code> → 4), but for <code>""</code> it returns 0, not 1. The recorder took 0 for a fault, flagged every such call <code>F_FAULT</code>, and reported the log as incomplete. Now <code>""</code> is recorded as 1 byte.</li>
+    <li><strong>The generation boundary is per thread.</strong> CRIU detaches threads one by one, and the recorder moved to the next generation only at the last detach. A thread detached earlier is already running again. In one Redis run the main thread made 8 syscalls in that 0.1 ms window, and they were stamped generation 0, so the replay of generation 1 started with the wrong syscall. Now each thread moves to the next generation at its own detach.</li>
+  </ul>
+</section>
+
+<!-- ============================================================ -->
+<section id="limits">
+  <div class="q">Know before you trust it</div>
+  <h2>Limits</h2>
+  <ul>
+    <li><strong>CONTINUE'd calls are not checked.</strong> seccomp never shows their return value. <code>mmap</code> and <code>mremap</code> addresses are <a href="#redis">pinned</a>; if the pinned address were taken, that too would only show up later, as a divergence. Other address-choosing calls (<code>shmat</code>) are not pinned.</li>
+    <li><strong>Installed fds are stand-ins.</strong> A socket is unconnected, a memfd is empty, and a file missing on the replay machine becomes <code>/dev/null</code> (so an <code>mmap</code> of it fails). That's fine during the replay; with <code>-e live</code> the process carries on talking to those stand-ins.</li>
+    <li><strong>Not replayed:</strong> signals, io_uring (completions bypass syscalls), shared memory written by other processes, <code>rdtsc</code>, and vDSO time without the clocksource trick.</li>
+    <li><strong>The filter is permanent,</strong> and <code>no_new_privs</code> stays set. See <a href="#end">the end state</a>.</li>
+    <li><strong>Without <code>-S</code> or <code>-T</code></strong>, threads or processes that share state may diverge. <strong>With <code>-S</code></strong>, races that happen entirely in user space are not controlled. <strong>With <code>-T</code></strong>, the user code between syscalls runs serially in recorded start order. Interleavings decided inside two stretches that overlapped live are still not reproduced, and neither is shared memory with processes outside the replayed tree.</li>
+    <li>Gaps in the recording (records flagged <code>F_TRUNC</code>, <code>F_FAULT</code> or <code>F_LOST</code>) are reported as a warning at load time, and the missing bytes are simply not injected.</li>
+  </ul>
+</section>
+
+<!-- ============================================================ -->
+<section id="code">
+  <div class="q">Reading the source</div>
+  <h2>Code map of sysrr_replay.c</h2>
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Function</th><th>Line</th><th>Does</th></tr></thead>
+    <tbody>
+      <tr><td><code>inject()</code></td><td>142</td><td>Run one syscall inside the stopped target (registers, CONT, wait for int3)</td></tr>
+      <tr><td><code>attach_listener()</code></td><td>168</td><td>The 10 steps of <a href="#attach">Injecting the filter</a>; returns the listener fd</td></tr>
+      <tr><td><code>load()</code></td><td>302</td><td>mmap the log, keep gen N without F_DUMP, attach DATA by seq, build per-thread queues, drop restart records</td></tr>
+      <tr><td><code>passthrough()</code></td><td>397</td><td>The <span class="pill run">run</span> list</td></tr>
+      <tr><td><code>resolve()</code></td><td>471</td><td>(arg, idx, offset) → address in the replayed thread</td></tr>
+      <tr><td><code>ns_tid_of()</code>, <code>thread_for()</code></td><td>589, 624</td><td>Host tid → container tid → queue; new threads matched to recorded clones</td></tr>
+      <tr><td><code>check_inputs()</code></td><td>711</td><td>D_IN / D_STR vs the thread's memory; prints the divergence report</td></tr>
+      <tr><td><code>inject_outputs()</code></td><td>764</td><td>Resolve all D_OUT pieces, then write them</td></tr>
+      <tr><td><code>fd_kind()</code>, <code>fd_cloexec()</code></td><td>850, 874</td><td>Does this call create fds (one, a pair, a dup)? With close-on-exec?</td></tr>
+      <tr><td><code>open_like()</code>, <code>make_fd()</code></td><td>933, 993</td><td>Make the stand-in: the same file inside the container root, or an object of the same kind</td></tr>
+      <tr><td><code>install_fds()</code></td><td>1070</td><td>ADDFD at the recorded numbers (SETFD, plus SEND for single fds)</td></tr>
+      <tr><td><code>needs_pin()</code>, <code>pin_address()</code></td><td>1169, 1183</td><td>Re-issue a real <code>mmap</code> / <code>mremap</code> at the recorded address (ptrace on one thread)</td></tr>
+      <tr><td><code>next_exit_is()</code>, <code>blocks()</code></td><td>1240, 1257</td><td><code>-T</code>: is this the next syscall in return order; does a CONTINUE'd call leave the thread asleep</td></tr>
+      <tr><td><code>pidfd_for()</code>, <code>main()</code></td><td>563, 1503</td><td>Process trees: the right pidfd per thread; collect the tree and attach one listener per process</td></tr>
+      <tr><td><code>handle()</code></td><td>1287</td><td>One notification: match, check, fake or run, or park (<code>-S</code>), or hold at the end</td></tr>
+      <tr><td><code>supervise()</code></td><td>1419</td><td>poll / NOTIF_RECV loop; re-tries parked notifications after each answer</td></tr>
+    </tbody>
+  </table>
+  </div>
+<pre>sudo ./sysrr_replay -p PID [-g GEN] [-e stop|live|kill] [-S|-T] [-c] [-v] [-N] [-w FILE] rec.log
+  -g GEN   generation to replay (default: last one in the log)
+  -S       strict cross-thread order (seq)
+  -T       serial: one thread runs user code at a time, in recorded return order
+  -c       only warn on input/argument mismatches
+  -v       print every replayed syscall: "#seq tid fake|run call = ret"
+  -N       do not install fds (faked opens create nothing; for comparison)
+  -w FILE  save what the target writes to fd 1 and 2
+
+tests/test_replay.sh                                  <span class="dim"># ckpt_target + tampered log</span>
+TARGET=mt_target REPLAY_OPTS=-S tests/test_replay.sh  <span class="dim"># two threads, strict order</span>
+TARGET=fd_target tests/test_replay.sh                 <span class="dim"># ADDFD, and -N diverging</span>
+REMOTE=claude-test SSH="ssh -i ~/.ssh/to-test" tests/test_replay.sh   <span class="dim"># restore elsewhere</span>
+tests/test_redis.sh                                   <span class="dim"># redis 7, digest compare (REMOTE= too)</span>
+tests/test_nginx.sh                                   <span class="dim"># nginx master + 2 workers, -T (REMOTE= too)</span></pre>
+</section>
+
+<!-- ============================================================ -->
+<section id="check">
+  <div class="q">Self-test</div>
+  <h2>Check yourself</h2>
+  <p>Answer in your head first, then open the answer.</p>
+
+  <details class="quiz"><summary>1. Why can't the replay tool simply be a launcher that installs the seccomp filter and then runs the program, like the original plan?</summary>
+    <p>A filter is installed by the process on itself and inherited across <code>fork</code>/<code>execve</code>. A launcher works for a program started fresh, but the restored process is recreated by CRIU from images: it never calls <code>execve</code>, and it is already "running" mid-program. So the <code>seccomp()</code> call has to be injected into it.</p></details>
+
+  <details class="quiz"><summary>2. In the attach sequence, why does the injector have to answer the injected <code>munmap</code> and <code>close</code>, but not <code>mmap</code> or <code>prctl</code>?</summary>
+    <p>Because <code>munmap</code> and <code>close</code> run after <code>seccomp()</code> has installed the filter, so they are already trapped and wait for a reply on the listener. If nobody answered, the target would hang in the injected syscall, and the injector would wait for the <code>int3</code> forever.</p></details>
+
+  <details class="quiz"><summary>3. A record says <code>read(3, buf, 16) = 16</code> with a 16-byte D_OUT piece. List what the replay does, and what the kernel does.</summary>
+    <p>Kernel: the filter returns USER_NOTIF, and the thread is parked before <code>read</code> runs. Replay: RECV the notification, map the host tid to its <code>ns_tid</code>, take the thread's next record, check that <code>nr</code> and args match, write the 16 recorded bytes at <code>args[1]</code> with <code>process_vm_writev</code>, then SEND <code>val = 16</code>. Kernel: the thread returns from the syscall with 16. Fd 3 is never read.</p></details>
+
+  <details class="quiz"><summary>4. In the tampered test, the wrong byte was injected at #409, yet the divergence is reported at #411. Why not at #409?</summary>
+    <p>At #409 nothing can be compared: the replay itself <em>supplies</em> that read's output. A divergence is only visible when the process hands data derived from the wrong input back to the kernel, which here is the next <code>write</code>. Divergence is detected on inputs (D_IN / D_STR), so its report marks where the drift <em>showed</em>, not where it started. That is why the recent-syscall history is printed.</p></details>
+
+  <details class="quiz"><summary>5. <code>futex</code> is run for real, not faked. What could go wrong if it were faked?</summary>
+    <p>A faked <code>FUTEX_WAIT</code> would return at once with the recorded value, while the lock or condition it waits for is not actually in the recorded state yet. The thread would carry on too early and race ahead of the thread that should have woken it. Run for real, the wait blocks until the replayed peer issues the real wake. Under <code>-S</code>, that wake is released in its recorded order.</p></details>
+
+  <details class="quiz"><summary>6. mt_target diverges without <code>-S</code> but not with it. Name a two-thread program that would diverge even with <code>-S</code>.</summary>
+    <p>Two threads that both do <code>counter++</code> (or read and modify one shared variable) in a loop with no syscall between iterations, then print the value. <code>-S</code> only freezes a thread when it reaches a syscall. Between syscalls both threads run freely, and their increments interleave however the CPU schedules them, differently from the recording. This is the kind of race the record guide said neither the race check nor syscall replay can see.</p></details>
+
+  <details class="quiz"><summary>7. After a successful replay in <code>stop</code> mode you press Ctrl-C, then later send the target SIGCONT. What happens?</summary>
+    <p>The listener closed with the tool, so every syscall the target now makes fails with <code>ENOSYS</code>. Its first syscall (the held <code>clock_nanosleep</code>) returns an error, and the program goes on with broken results. Keep the tool running, or use <code>-e live</code>, if the process should continue.</p></details>
+
+  <details class="quiz"><summary>8. With ADDFD on, why would leaving <code>close</code> faked break the replay, even though <code>close</code> brings no information into the process?</summary>
+    <p>Every faked open now leaves a real fd at the recorded number. If the matching <code>close</code> were faked, that fd would stay open. Faked opens would still land at the recorded numbers, because <code>SETFD</code> replaces whatever is there. But real fd-creating calls, such as an <code>mmap</code> of a file or anything after <code>-e live</code>, would get the lowest free number, which is no longer what the recording had. Fds would also leak until <code>EMFILE</code>. Running <code>close</code> for real keeps the target's fd table equal to the recorded one; that is also why a "number already open" warning means the tables drifted apart.</p></details>
+
+  <details class="quiz"><summary>9. The supervisor opens the container's files itself, as host root. A container's <code>/etc/config</code> is a symlink to <code>/etc/shadow</code>. What happens with plain <code>open("/proc/PID/root/etc/config")</code>, and what does the replay do instead?</summary>
+    <p>A plain open follows the absolute symlink from the <em>host's</em> root, opens the host's <code>/etc/shadow</code> (the supervisor is root, so it is allowed), and ADDFD hands that fd into the container: an escape. The replay uses <code>openat2(root_fd, path, RESOLVE_IN_ROOT | RESOLVE_NO_MAGICLINKS)</code>. Then <code>/</code>, <code>..</code> and absolute symlinks resolve inside the container's root, giving the container's own <code>/etc/shadow</code>, exactly what the real <code>open</code> in the container would have reached.</p></details>
+
+  <details class="quiz"><summary>10. Pinning an <code>mmap</code> works by interrupting a thread that is parked in a seccomp notification. Why does changing its registers at that moment change the arguments of the syscall it will run?</summary>
+    <p>The interrupt makes the notification wait return <code>-ERESTARTSYS</code>, and the thread stops for ptrace on its way back to user space. Restart handling happens after that stop: since no signal handler runs, the kernel sets <code>rax = orig_rax</code> and moves <code>rip</code> back over the <code>syscall</code> instruction. The thread then executes the syscall again, and the arguments are read from <code>rdi</code>, <code>rsi</code>, <code>rdx</code>, <code>r10</code>, <code>r8</code>, <code>r9</code> as they are <em>now</em>, after our <code>SETREGS</code>. Our filter traps the new attempt as a fresh notification, which shows the pinned address.</p></details>
+
+  <details class="quiz"><summary>11. Under <code>-S</code>, worker B's <code>accept4</code> is released right after worker A's, exactly in recorded order, yet the two workers can still end up with each other's connection numbers. Why, and what does <code>-T</code> change?</summary>
+    <p>The counter is incremented in shared memory <em>after</em> <code>accept4</code> returns, before the worker's next syscall. <code>-S</code> only waits for the right syscall <em>entry</em>: once A's <code>accept4</code> is answered, B's is next in <code>seq</code> order and is answered at once, while A is still on its way to the increment. Both increments then race on two CPUs. <code>-T</code> doesn't release B until A has reached its next syscall, so A's increment is finished first. And because releases follow the recorded return times, A goes first exactly when A's <code>accept4</code> returned first in the recording.</p></details>
+</section>
+</main>
+</div>
+
+</body></html>
