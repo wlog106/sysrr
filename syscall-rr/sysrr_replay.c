@@ -279,6 +279,7 @@ struct ent {                        /* one recorded syscall */
 	unsigned done;
 	u64 key;                    /* -T: its place in the serial order */
 	u64 enter;                  /* -T: ts_enter, made to agree with seq */
+	u64 lock_addr, late_key;    /* -T: its stretch ends waiting for this lock (lock_free_yet) */
 	const struct rec_signal *sig[4];   /* signals the thread got right after this call */
 	unsigned char nsig, sig_done, kill_used;
 };
@@ -857,8 +858,9 @@ static void kill_all(int sig)
 }
 static enum { RUN, ENDED, DIVERGED, LIVE } state = RUN;
 static int relax_order;
+static int reordered;               /* -T: lock_free_yet moved a record */
 static struct thr *jump_thr;        /* -T: this thread may go ahead of its turn (lock_holder_first) */
-static unsigned long n_jump, n_ptrdiff;
+static unsigned long n_jump, n_ptrdiff, n_memslack;
 static unsigned long n_relaxed;
 static unsigned long n_fake, n_pass, n_argwarn, n_inwarn, in_bytes, out_bytes;
 static unsigned long n_fds, n_fdwarn, n_pin, n_pidpin, n_slack, n_sig;
@@ -1114,6 +1116,10 @@ static void print_totals(void)
 	if (n_ptrdiff)
 		printf("   %lu call(s) passed buffers at other addresses than recorded (same bytes: the "
 		       "heap is laid out differently)\n", n_ptrdiff);
+	if (n_memslack)
+		printf("   %lu memory call(s) went another way than recorded (an allocator's mmap or "
+		       "munmap, or a mapping whose recorded place was in use): memory is laid out "
+		       "differently, the data is checked as usual\n", n_memslack);
 	if (n_jump)
 		printf("   %lu time(s) a thread went ahead of one that was waiting for its lock\n", n_jump);
 	if (n_sigplan)
@@ -1947,13 +1953,24 @@ static void order_serial(void)
 			e->key = release_time(e);
 			if (is_clone(r->nr) || r->nr == SYS_execve || r->nr == SYS_execveat || !n)
 				;
+			/* A call that gives something back to the kernel (a descriptor
+			 * number, an address range) runs for real when it is released,
+			 * and the next open or mmap of another thread may be recorded
+			 * with that very number or address.  It keeps the place of its
+			 * own return, so these stay in the kernel's order. */
+			else if (r->nr == SYS_close || r->nr == SYS_close_range || r->nr == SYS_munmap ||
+				 r->nr == SYS_dup2 || r->nr == SYS_dup3)
+				;
 			/* It ends by waiting for a lock (value 2: "locked, with waiters",
 			 * the convention of glibc, musl, Go, Rust): it found the lock
-			 * taken.  One at a time, nobody can find a lock taken, so it goes
-			 * where the wait ended and it got the lock: after the holder. */
-			else if (n->nr == SYS_futex && futex_waits(n->args[1]) && (u32)n->args[2] == 2 &&
-				 nx->key > e->key)
-				e->key = nx->key;
+			 * taken.  Whether it will find it taken here too is checked when
+			 * its turn comes (lock_free_yet). */
+			else if (n->nr == SYS_futex && futex_waits(n->args[1]) && (u32)n->args[2] == 2) {
+				e->lock_addr = n->args[0];
+				e->late_key = nx->key;
+				if (nx->enter > e->key)
+					e->key = nx->enter;
+			}
 			else if (nx->enter > e->key)
 				e->key = nx->enter;
 			nx = e;
@@ -2016,6 +2033,26 @@ static int start_threads(int force)
 	ptrace(PTRACE_DETACH, t->start_tid, 0, 0);
 	t->start_tid = 0;
 	t->running = 1;
+	return 1;
+}
+
+/* The stretch after e ended, live, with the thread finding a lock taken.  If the
+ * holder took the lock before its last syscall and still holds it, the lock is
+ * taken now as well and all is as recorded.  If the lock is free, the holder took
+ * it in a stretch that overlapped this one and has not run yet: one at a time,
+ * this thread would get the lock it lost.  Move it behind the end of its wait,
+ * which is after the holder let go. */
+static int lock_free_yet(struct ent *e, pid_t tid)
+{
+	u32 word = 1;
+
+	if (!e->lock_addr || e->late_key <= e->key || mem_read(tid, e->lock_addr, &word, sizeof(word)) || word)
+		return 0;
+	e->key = e->late_key;
+	e->lock_addr = 0;
+	reordered = 1;
+	qsort(byexit, nents, sizeof(*byexit), cmp_exit);
+	xnext = 0;
 	return 1;
 }
 
@@ -2161,6 +2198,36 @@ static void note_exec(pid_t g)
 		execed[nexeced++ % 256] = g, nexeced = nexeced > 256 ? 256 : nexeced;
 }
 
+static int is_housekeeping(long nr, const u64 *a)
+{
+	if (nr == SYS_munmap)
+		return 1;
+	return nr == SYS_mmap && (a[3] & MAP_ANONYMOUS) && !(a[3] & (MAP_FIXED | MAP_SHARED));
+}
+
+static int same_block(const struct ent *e, const struct seccomp_notif *req)
+{
+	return (long)e->s->nr == req->data.nr && e->s->args[1] == req->data.args[1];
+}
+
+/* is any part of [addr, addr+len) mapped in the target? */
+static int range_mapped(pid_t pid, u64 addr, u64 len)
+{
+	char path[64], line[256];
+	int hit = 0;
+
+	snprintf(path, sizeof(path), "/proc/%d/maps", pid);
+	FILE *f = fopen(path, "r");
+	while (f && !hit && fgets(line, sizeof(line), f)) {
+		unsigned long long lo, hi;
+		if (sscanf(line, "%llx-%llx", &lo, &hi) == 2)
+			hit = lo < addr + len && addr < hi;
+	}
+	if (f)
+		fclose(f);
+	return hit;
+}
+
 /* Handle one notification.  Returns 1 if it was answered or deliberately
  * held, 0 if it must wait for its turn (strict mode). */
 static int handle(struct seccomp_notif *req)
@@ -2249,6 +2316,33 @@ static int handle(struct seccomp_notif *req)
 		n_slack++;
 		e = next_ent(t);
 	}
+	/* Memory housekeeping.  An allocator shared by threads hands out a freed
+	 * block or asks the kernel for a new one depending on who freed and who
+	 * asked first, down to the nanosecond.  An anonymous mmap or a munmap the
+	 * replay makes without a record runs; a recorded one it does not make is
+	 * dropped.  The program gets its memory either way, at another address. */
+	while (e && is_housekeeping(e->s->nr, e->s->args) && !same_block(e, req)) {
+		if (opt_verbose)
+			printf("#%-7llu %-5u drop %s of %llu bytes (recorded, not made now: allocator)\n",
+			       (unsigned long long)e->s->h.seq, ns, sysname(e->s->nr),
+			       (unsigned long long)e->s->args[1]);
+		consume(e);
+		n_memslack++;
+		note_exec(tgid_of(req->pid));           /* addresses differ from here on */
+		e = next_ent(t);
+	}
+	if (is_housekeeping(req->data.nr, (const u64 *)req->data.args) && (!e || !same_block(e, req)) &&
+	    (e || remaining > 0)) {
+		if (opt_verbose)
+			printf("         %-5u real %s of %llu bytes (not in the recording: allocator)\n", ns,
+			       sysname(req->data.nr), (unsigned long long)req->data.args[1]);
+		n_memslack++;
+		note_exec(tgid_of(req->pid));
+		respond(req->id, 1, 0);
+		if (opt_serial)
+			t->running = 1;
+		return 1;
+	}
 	int timing = is_timing_only(req->data.nr, req->data.args[0]);
 	/* -T: the wait this thread was still in when the recording stopped (its
 	 * record has no result and was skipped at load).  It never returned, so it is
@@ -2302,6 +2396,8 @@ static int handle(struct seccomp_notif *req)
 			return 0;               /* not its turn yet */
 		if (opt_serial && (running_thread(t) || (t != jump_thr && !next_exit_is(e))))
 			return 0;               /* someone else runs, or not its turn */
+		if (opt_serial && t != jump_thr && lock_free_yet(e, req->pid))
+			return 0;               /* moved back: the parked ones are tried again */
 	}
 
 	if ((long)e->s->nr != req->data.nr) {
@@ -2314,7 +2410,17 @@ static int handle(struct seccomp_notif *req)
 	}
 
 	/* a new mapping must land where it landed in the recording */
-	if (t->pinned != e && needs_pin(req, e)) {
+	/* The recorded place can be in use: another thread's munmap of it is in the
+	 * log before this call but gets its turn after (-T orders stretches of user
+	 * code, not kernel calls), or the allocator went its own way.  Forcing the
+	 * address would make the mmap fail; let the kernel choose instead. */
+	int taken = t->pinned != e && needs_pin(req, e) && req->data.nr == SYS_mmap &&
+		    range_mapped(req->pid, e->s->ret, req->data.args[1]);
+	if (taken) {
+		n_memslack++;
+		note_exec(tgid_of(req->pid));
+	}
+	if (t->pinned != e && needs_pin(req, e) && !taken) {
 		if (pin_address(req, e) == 0) {
 			t->pinned = e;
 			n_pin++;
@@ -2649,12 +2755,13 @@ static void supervise(void)
 			/* strict mode: did that unblock a parked thread? */
 			for (int j = 0; j < nparked; ) {
 				lfd = parked[j].lfd;
+				reordered = 0;
 				if (ioctl(lfd, SECCOMP_IOCTL_NOTIF_ID_VALID, &parked[j].req.id) ||
 				    handle(&parked[j].req)) {
 					parked[j] = parked[--nparked];
 					j = 0;
 				} else {
-					j++;
+					j = reordered ? 0 : j + 1;      /* the order changed: look again */
 				}
 			}
 			while ((jump_thr = lock_holder_first())) {

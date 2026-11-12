@@ -42,6 +42,7 @@ TESTS=(
 "asyncio    |Python asyncio: one epoll loop, many connections  |TARGET=py_async_target.py IMG=$PY CKPT_OPTS=--tcp-established SYSRR_OPTS=-f REPLAY_OPTS=-T test_replay.sh"
 "py-threads |Python threads and the GIL                        |TARGET=py_threads_target.py IMG=$PY REPLAY_OPTS=-T EXPECT=honest test_replay.sh"
 "py-procs   |Python multiprocessing: locks between processes   |TARGET=py_mp_target.py IMG=$PY SYSRR_OPTS=-f REPLAY_OPTS=-T EXPECT=honest test_replay.sh"
+"procs+thr  |2 processes x 3 threads, and new ones with threads|TARGET=mpmt_target SYSRR_OPTS=-f REPLAY_OPTS=-T test_replay.sh"
 "redis      |real server: dataset digest identical             |test_redis.sh"
 "memcached  |real server, 4 worker threads: dataset identical  |test_memcached.sh"
 "nginx      |real server, 3 processes: logs identical          |test_nginx.sh"

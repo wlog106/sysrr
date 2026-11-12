@@ -409,6 +409,27 @@ them from the REC_SIGNAL records; `-v` prints each delivery.
   handler, one not) 8 of 8, 121 lines. Both are suite tests now (`signal`,
   `signal-out`), must pass.
 
+## Processes and threads together (2026-11-12, unfinished)
+
+* `tests/mpmt_target.c` (2 worker processes x 3 threads, plus short-lived
+  processes with threads; suite test `procs+thr`): 6 of 6 fresh runs after one
+  fix. The fix: "a stretch that ends waiting for a mutex goes behind the holder"
+  is now decided at replay time (`lock_free_yet`: read the lock word; move the
+  record back only if the lock is free). Statically it was wrong when the holder
+  keeps the lock across a syscall. Thread pool went from 5 of 8 to 5 of 6.
+* `tests/test_httpd.sh` (Apache 2.4 event MPM, 2 processes x threads, 8 clients;
+  compares which pid/tid served each request): **3 of 6**, so it is NOT in
+  run_all.sh. Fixes made on the way: allocator slack (an anonymous mmap or a
+  munmap may be extra or missing: `is_housekeeping`); a mapping is not forced
+  onto an occupied address; close/munmap/dup2 keep the place of their own return
+  in the -T order (they free a number or address another thread's next call may
+  be recorded with). Open failure types, not analysed yet: (1) file mmap fails
+  and httpd falls back to lseek+read ("expected writev, actual lseek"), probably
+  another real-call ordering case; (2) "no progress", a thread owing a read;
+  (3) "expected read, actual gettimeofday".
+* Not run after the last change (close/munmap ordering): the full suite. Before
+  it, the suite passed 27 of 28 (only httpd failed). Rerun before trusting.
+
 ## Replay limitations (tell the user when relevant)
 
 * CONTINUE'd syscalls: their return value can't be checked (seccomp never
