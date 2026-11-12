@@ -132,7 +132,7 @@ textarea:focus-visible { outline: 2px solid var(--kernel); outline-offset: 1px; 
 <header>
   <div class="eyebrow">syscall-rr · record side</div>
   <h1>Inside sysrr</h1>
-  <p class="lede">sysrr is a flight recorder for one container process. It writes down every syscall the process makes and every byte that goes in or out. Later, <a href="https://claude.ai/artifact/BrqbnVeMN3qqisG1nxenKb">sysrr_replay</a> uses that log to relive what happened.</p>
+  <p class="lede">sysrr is a flight recorder for one container process. It writes down every syscall the process makes and every byte that goes in or out. Later, <a href="https://claude.ai/artifact/BrqbnVeMN3qqisG1nxenKb">sysrr_replay</a> uses that log to relive what happened. New to the tool? Start with the <a href="https://claude.ai/artifact/YJn3muzGnxV1wMH1Sd2ycT">walkthrough</a>.</p>
 </header>
 
 <section id="idea">
@@ -283,7 +283,7 @@ sudo podman container checkpoint --leave-running -e ckpt.tar.gz NAME
 ./sysrr_dump rec.log                 <span class="dim"># read the log</span>
 ./sysrr_dump -s rec.log              <span class="dim"># is it complete?</span>
 ./sysrr_dump -g 1 rec.log            <span class="dim"># only generation 1</span></pre>
-  <p>For time to be recorded, <code>clock_gettime</code> must be a real syscall. Normally it answers in user space (the vDSO). Fix that on both machines with <code>echo acpi_pm | sudo tee /sys/devices/system/clocksource/clocksource0/current_clocksource</code>. The tests do this for you. Random bytes have the same gap on recent systems, because glibc's <code>getrandom()</code> also answers in user space, and this trick doesn't help there. The <a href="https://claude.ai/artifact/BrqbnVeMN3qqisG1nxenKb#limits">replay guide</a> explains what happens.</p>
+  <p>For time to be recorded, <code>clock_gettime</code> must be a real syscall. Normally it answers in user space (the vDSO). Fix that on both machines with <code>echo acpi_pm | sudo tee /sys/devices/system/clocksource/clocksource0/current_clocksource</code>. The tests do this for you. It doesn't help <code>time()</code> or the coarse clocks: the vDSO answers those from a shared page whatever the clock source, so they're never recorded. Random bytes have the same gap on recent systems, because glibc's <code>getrandom()</code> also answers in user space, and this trick doesn't help there. The <a href="https://claude.ai/artifact/BrqbnVeMN3qqisG1nxenKb#limits">replay guide</a> explains what happens.</p>
   <p>One trap: if the target appends to a file in its container while you checkpoint, the restore fails with <code>bad size</code>. CRIU noted the size during the dump, and the file kept growing before podman archived it.</p>
 </section>
 

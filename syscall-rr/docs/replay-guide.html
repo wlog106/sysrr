@@ -96,6 +96,7 @@ td small { color: var(--muted); }
   <a href="#children">New threads, processes</a>
   <a href="#fds">Real file descriptors</a>
   <a href="#mmap">New memory mappings</a>
+  <a href="#signals">Its own signals</a>
   <a href="#end">How a replay ends</a>
   <a href="#tests">The test suite</a>
   <a href="#bugs">Bugs it found</a>
@@ -109,7 +110,7 @@ td small { color: var(--muted); }
 <header>
   <div class="eyebrow">syscall-rr · replay side</div>
   <h1>Inside sysrr_replay</h1>
-  <p class="lede">A restored process wakes up at the moment of the checkpoint. sysrr_replay answers each of its syscalls from the log made by <a href="https://claude.ai/artifact/6ZebwgVF4vFLJRKdhWRsFA">sysrr</a>, so the process lives through the same events again, without the original files, network or clock.</p>
+  <p class="lede">A restored process wakes up at the moment of the checkpoint. sysrr_replay answers each of its syscalls from the log made by <a href="https://claude.ai/artifact/6ZebwgVF4vFLJRKdhWRsFA">sysrr</a>, so the process lives through the same events again, without the original files, network or clock. New to the tool? Start with the <a href="https://claude.ai/artifact/YJn3muzGnxV1wMH1Sd2ycT">walkthrough</a>.</p>
 </header>
 
 <section id="idea">
@@ -157,7 +158,7 @@ td small { color: var(--muted); }
   <p>Then it's answered one of two ways:</p>
   <div class="cols">
     <div class="card"><h3><span class="pill fake">fake</span></h3><p>Anything that touches the outside world: <code>read</code>, <code>write</code>, <code>recv</code>, <code>open</code>, <code>stat</code>, <code>clock_gettime</code>, <code>getrandom</code>, <code>nanosleep</code>. The call never runs, and the recorded result is returned.</p></div>
-    <div class="card"><h3><span class="pill run">run for real</span></h3><p>Anything that changes the process itself: <code>mmap</code>, <code>brk</code>, <code>clone</code>, <code>execve</code>, <code>futex</code>, <code>close</code>, <code>rt_sigaction</code>, <code>exit</code>. Faking these would leave it without the memory or thread it expects.</p></div>
+    <div class="card"><h3><span class="pill run">run for real</span></h3><p>Anything that changes the process itself: <code>mmap</code>, <code>brk</code>, <code>clone</code>, <code>execve</code>, <code>futex</code>, <code>close</code>, <code>rt_sigaction</code>, <code>exit</code>. Faking these would leave it without the memory or thread it expects. One exception: with <code>-T</code>, a recorded <code>futex</code> wait is answered from the log.</p></div>
   </div>
   <p>A wrong value only shows up when the process hands something based on it back to the kernel. That's why a divergence report also lists the thread's last five calls: the cause is often a little earlier.</p>
 </section>
@@ -169,8 +170,9 @@ td small { color: var(--muted); }
     <li><code>futex</code>: did the thread have to sleep, or was the lock free?</li>
     <li><code>clock_gettime(MONOTONIC)</code>: a timed wait reads the clock only if the lock was taken.</li>
     <li><code>rt_sigreturn</code>: did its child's <code>SIGCHLD</code> happen to arrive just then?</li>
+    <li><code>nanosleep</code>: how often a thread polls is timing, and so is how long it sleeps.</li>
   </ul>
-  <p>These depend on nanoseconds, so a replay can legitimately differ. Replay treats their records as hints. A recorded one that doesn't happen is dropped, and an unrecorded one simply runs. What really decides the outcome is the process's memory, which every thread sees.</p>
+  <p>These depend on nanoseconds, so a replay can legitimately differ. Replay treats their records as hints. A recorded one that doesn't happen is dropped, and an unrecorded one simply runs. With <code>-v</code> each of these is printed as <code>drop</code> or <code>real</code>, which shows where a replay starts to leave the recording. What really decides the outcome is the process's memory, which every thread sees.</p>
   <p>Before this rule, Redis sometimes failed even with <code>-S</code>, because a lock was contended live and free in the replay. <code>CLOCK_REALTIME</code> stays strict, because programs print and store it.</p>
 </section>
 
@@ -181,12 +183,27 @@ td small { color: var(--muted); }
     <thead><tr><th>Mode</th><th>What it does</th><th>Use it for</th></tr></thead>
     <tbody>
       <tr><td>Default</td><td>Each thread follows its own list.</td><td>One thread, or threads that share nothing.</td></tr>
-      <tr><td><code>-T</code></td><td>Only one thread runs user code at a time, in the order calls <em>returned</em>.</td><td><strong>Try this first</strong> for anything that shares memory or forks.</td></tr>
+      <tr><td><code>-T</code></td><td>Only one thread runs user code at a time, in the order the threads reached their <em>next</em> call.</td><td><strong>Try this first</strong> for anything that shares memory, uses locks or forks.</td></tr>
       <tr><td><code>-S</code></td><td>Syscalls <em>start</em> in the recorded order. An early thread waits.</td><td>Faster, for when threads rarely touch the same memory. It failed 2 of 9 runs on our two-thread test, while <code>-T</code> passed 6 of 6.</td></tr>
     </tbody>
   </table></div>
   <p>Why <code>-T</code> exists: nginx workers bump a shared counter right after <code>accept4</code>, with no syscall. Under <code>-S</code>, once A's call is answered, B's is released while A is still running, and the two race. Under <code>-T</code>, B waits until A reaches its next syscall.</p>
-  <p>Two calls count from when they <em>started</em> rather than when they returned. A <code>clone</code> must run before its child's first syscall, even though it returns after it. An <code>execve</code> must run before a <code>vfork</code> parent can wake up. Without this, each side waits for the other forever.</p>
+  <p>Two calls count from when they <em>started</em>. A <code>clone</code> must run before its child's first syscall, even though it returns after it. An <code>execve</code> must run before a <code>vfork</code> parent can wake up. Without this, each side waits for the other forever.</p>
+
+  <h3>Which thread goes first under -T</h3>
+  <p>Between two syscalls a thread runs a stretch of user code. Live, stretches of different threads overlap. Under <code>-T</code> they run one after the other, so each pair that overlapped needs an order, and the log can't give it: touching shared memory makes no syscall.</p>
+  <p>Replay orders stretches by when they <em>ended</em>, which is when the thread entered its next syscall. Code that works under a lock usually makes a syscall right after releasing it, such as a futex wake or a write, so the end of a stretch is close to the moment that mattered. On six recordings of a thread pool, ordering by the end replayed four to the last line. Ordering by the start replayed one.</p>
+  <p>Programs built on locks need four more rules:</p>
+  <div class="tablewrap"><table>
+    <thead><tr><th>Situation</th><th>What replay does</th><th>Why</th></tr></thead>
+    <tbody>
+      <tr><td>A recorded wait for a lock or condition</td><td>Doesn't run it. Holds it until its place in the order, then returns the recorded result.</td><td>A real wait returns when the kernel likes. Four workers woken together would race for the lock again.</td></tr>
+      <tr><td>A thread found a lock taken and waited</td><td>Runs that thread after the one that held the lock.</td><td>One at a time, nobody can find a lock taken.</td></tr>
+      <tr><td>The restore itself</td><td>Keeps every thread stopped with ptrace and starts them one by one, in the order of their first calls.</td><td>A restored thread runs until its first syscall before seccomp can hold it. All of them at once is a race.</td></tr>
+      <tr><td>The thread whose turn it is waits for a lock that a later thread holds</td><td>Lets the holder go first, if its call had already returned in the recording.</td><td>The holder kept the lock across a syscall. Before this rule the replay stalled for 2 s and then guessed.</td></tr>
+    </tbody>
+  </table></div>
+  <p>What's left is physical. If two threads release the same lock and enter the kernel within a few hundred nanoseconds, the log can show them in the wrong order. Replay then diverges at the first value that depended on it, and says so.</p>
 </section>
 
 <section id="children">
@@ -219,6 +236,22 @@ td small { color: var(--muted); }
   <p>seccomp can't change arguments, but ptrace can. Replay interrupts the parked thread, sets the recorded address with <code>MAP_FIXED_NOREPLACE</code>, and lets the kernel restart the call. This takes a few hundred microseconds per mapping.</p>
 </section>
 
+<section id="signals">
+  <h2>Signals a program sends itself</h2>
+  <p>Some signals happen at an exact point in the program, so a replay must deliver them too:</p>
+  <div class="tablewrap"><table>
+    <thead><tr><th>Signal</th><th>How it's replayed</th></tr></thead>
+    <tbody>
+      <tr><td><code>raise</code>, <code>kill</code>, <code>sigqueue</code> to itself</td><td>The call runs for real, so the kernel delivers the signal.</td></tr>
+      <tr><td><code>SIGSEGV</code> from a bad pointer</td><td>The same instruction faults again. Nothing to do.</td></tr>
+      <tr><td><code>SIGPIPE</code> from a write to a closed pipe</td><td>The write is faked, so no kernel code sends the signal. Replay sends it together with the recorded <code>EPIPE</code>.</td></tr>
+      <tr><td><code>sigwaitinfo</code>, or a read from a signalfd</td><td>Runs for real if the recorded signal is really pending. Otherwise it's faked.</td></tr>
+    </tbody>
+  </table></div>
+  <p><code>SIGPIPE</code> needs care. Sent while the thread is parked, it would make the kernel restart the write. Sent after the answer, it would arrive a little late. So replay uses ptrace for a moment: it interrupts the parked thread, puts the recorded result in its registers, queues the signal and lets go. The kernel then runs the handler first and the program sees <code>EPIPE</code> after it, as it did live.</p>
+  <p>Signals from a timer or from another program are still not replayed. See <a href="#limits">Limits</a>.</p>
+</section>
+
 <section id="end">
   <h2>How a replay ends</h2>
   <p>When a thread runs out of records, its next syscall stays unanswered, unless it's a timing-only call, which runs for real so that other threads waiting on it aren't stuck. When all records are used, <code>-e</code> decides what happens:</p>
@@ -236,11 +269,49 @@ td small { color: var(--muted); }
 
 <section id="tests">
   <h2>The test suite</h2>
-  <p><code>tests/run_all.sh</code> runs each target through the same cycle: record, checkpoint, restore, replay, compare with the live run. The last full run, on 2026-11-06, passed all 14 tests, two rounds each, on both machines.</p>
+  <p><code>tests/run_all.sh</code> runs each target through the same cycle: record, checkpoint, restore, replay, compare with the live run. It has 25 tests. The last full run, on 2026-11-12, was two rounds on one machine: 24 tests passed both rounds. <code>files</code> failed one round because of the test itself (it kept its files where podman archives them after the dump), and passed 4 of 4 once that was fixed. The second machine was not reachable that day.</p>
+  <div class="tablewrap"><table>
+    <thead><tr><th>Group</th><th>Tests</th><th>Passes when</th></tr></thead>
+    <tbody>
+      <tr><td>Small programs</td><td><code>basic</code>, <code>threads</code>, <code>fds</code>, <code>syscalls</code>, <code>fork</code>, <code>thread-new</code>, <code>exit</code>, <code>crash</code>, <code>net</code>, <code>files</code>, <code>reexec</code>, <code>self-signal</code></td><td>The replay prints the same lines as the live run.</td></tr>
+      <tr><td>Languages</td><td><code>python</code>, <code>asyncio</code>, <code>perl</code></td><td>The same.</td></tr>
+      <tr><td>Servers</td><td><code>redis</code>, <code>nginx</code>, <code>memcached</code></td><td>The restored server ends with the same data or logs as the live one.</td></tr>
+      <tr><td>Known limits</td><td><code>signal</code>, <code>vdso-random</code>, <code>shell</code>, <code>pool</code>, <code>pool-burst</code>, <code>py-threads</code>, <code>py-procs</code></td><td>The replay matches, or it stops by itself and says what went wrong. A hang or a false pass is a failure.</td></tr>
+    </tbody>
+  </table></div>
+  <p>Eleven of these were added on 2026-11-12: <code>net</code>, <code>files</code>, <code>reexec</code>, <code>self-signal</code>, <code>pool</code>, <code>pool-burst</code>, <code>perl</code>, <code>asyncio</code>, <code>py-threads</code>, <code>py-procs</code> and <code>memcached</code>.</p>
+  <p>How often the hard ones replay to the last line, measured on this machine:</p>
+  <div class="tablewrap"><table>
+    <thead><tr><th>Target</th><th>Before 2026-11-12</th><th>Now</th></tr></thead>
+    <tbody>
+      <tr><td>Thread pool, jobs handed out one by one</td><td>0 of 6</td><td>5 of 8 with the final code. Failures come either in the first rounds after the restore or late.</td></tr>
+      <tr><td>Thread pool, four workers woken at once</td><td>Stopped within 2 lines</td><td>2 of 6. The others usually get past half of the lines.</td></tr>
+      <tr><td>memcached, 4 clients, each on its own keys</td><td>Stalled after 140 calls</td><td>3 of 3</td></tr>
+      <tr><td>memcached, clients sharing keys</td><td>Not tested</td><td>1 of 3 with 2 clients. With 4 or more it diverges, after 1,300 to 4,600 of about 4,700 calls.</td></tr>
+      <tr><td>Python threads</td><td>No progress after 20 s</td><td>Still fails, and says so.</td></tr>
+    </tbody>
+  </table></div>
   <p>Two tests can still fail now and then for known reasons. <code>nginx</code> can lose the race on its shared <code>conn=</code> counter, and the tool reports it. <code>python</code> can hit <code>CRIU checkpointing failed -52</code> before any replay starts.</p>
-  <p>The tests are <code>basic</code>, <code>threads</code>, <code>fds</code>, <code>syscalls</code>, <code>fork</code>, <code>thread-new</code>, <code>exit</code>, <code>crash</code>, <code>signal</code>, <code>vdso-random</code>, <code>shell</code>, <code>python</code>, <code>redis</code> and <code>nginx</code>. <code>signal</code>, <code>vdso-random</code> and <code>shell</code> depend on something replay doesn't reproduce, so they pass when the tool ends by itself and says what happened.</p>
 
-  <h2>Bugs the suite found</h2>
+  <h2>Bugs the new targets found</h2>
+  <p>Found and fixed on 2026-11-12. Six of the eleven new targets found something.</p>
+  <div class="tablewrap"><table>
+    <thead><tr><th>Target</th><th>Symptom</th><th>Cause</th><th>Fix</th></tr></thead>
+    <tbody>
+      <tr><td><code>self-signal</code></td><td>The <code>SIGPIPE</code> handler never ran</td><td>A faked write returns <code>EPIPE</code> but no kernel code sends the signal</td><td>Replay sends it with the result</td></tr>
+      <tr><td><code>self-signal</code></td><td><code>sigqueue</code> to itself did nothing</td><td>The call was faked</td><td>It runs for real, like <code>kill</code></td></tr>
+      <tr><td><code>self-signal</code></td><td>A blocked signal stayed pending and killed the process later</td><td><code>sigwaitinfo</code> was faked, so nothing took the real signal</td><td>It runs for real when the signal is pending</td></tr>
+      <tr><td><code>pool</code></td><td>Diverged within a few rounds, every time</td><td>Woken threads raced for the lock again; overlapping stretches were ordered by their start; every thread ran freely at the restore</td><td>The <a href="#order">four rules</a> and ordering by the end</td></tr>
+      <tr><td><code>pool</code></td><td>A worker took a job it never got live</td><td>Its wait was still open when the recording stopped. Run for real, it took a wake-up meant for another thread</td><td>Such a wait is held</td></tr>
+      <tr><td><code>memcached</code></td><td>Stalled after 140 calls</td><td>A thread held a lock across <code>mmap</code> and was parked behind the thread that needed it</td><td>The holder goes first</td></tr>
+      <tr><td><code>memcached</code></td><td>Diverged on a reply whose bytes were right</td><td>Buffer addresses inside an <code>iovec</code> were compared as data. With threads, the heap is laid out by who allocated first</td><td>Lengths and bytes are compared, addresses aren't</td></tr>
+      <tr><td><code>py-threads</code></td><td>Diverged on a sleep</td><td>The wake-up time of a sleep was compared as data</td><td>A sleep's time isn't checked</td></tr>
+      <tr><td><code>reexec</code></td><td>Hundreds of warnings after <code>execve</code></td><td>The new program image sits at new addresses</td><td>No address warnings after a process's own <code>execve</code></td></tr>
+      <tr><td><code>perl</code></td><td>The seconds printed were 4 s off</td><td><code>time()</code> never enters the kernel, even with <code>acpi_pm</code></td><td>Not fixable in replay. Now listed under <a href="#limits">Limits</a></td></tr>
+    </tbody>
+  </table></div>
+
+  <h2>Bugs the first suite found</h2>
   <p>All found and fixed on 2026-11-06. Redis and nginx never hit most of them, because their threads already existed at the checkpoint.</p>
   <div class="tablewrap"><table>
     <thead><tr><th>Symptom</th><th>Cause</th><th>Fix</th></tr></thead>
@@ -313,8 +384,10 @@ td small { color: var(--muted); }
   <div class="tablewrap"><table>
     <thead><tr><th>Not reproduced</th><th>Why</th><th>What you see</th></tr></thead>
     <tbody>
-      <tr><td>Signals that arrive at arbitrary moments</td><td>Not replayed. Their timing is not in the log.</td><td>A divergence at the first value they changed. Shell scripts often hit this through <code>SIGCHLD</code>.</td></tr>
-      <tr><td>Threads competing for a busy lock (Python threads and the GIL)</td><td>Who won the lock is not in the log.</td><td>A divergence, or “no progress” after 20 s.</td></tr>
+      <tr><td>Signals from a timer or from another program</td><td>Not replayed. Their timing is not in the log. Signals a program sends itself are replayed.</td><td>A divergence at the first value they changed. Shell scripts often hit this through <code>SIGCHLD</code>.</td></tr>
+      <tr><td>Threads taking the same lock within a few hundred nanoseconds</td><td>Who won is not in the log. <code>-T</code> works it out from the futex calls, which is usually right for thread pools and memcached.</td><td>A divergence at the first value that depended on it.</td></tr>
+      <tr><td>Python threads</td><td>The interpreter lock changes hands on a 5 ms timer, with no syscall that says who got it.</td><td>A divergence, or “no progress” after 20 s.</td></tr>
+      <tr><td><code>time()</code> and the coarse clocks</td><td>The vDSO answers them from a shared page, whatever the clock source, so they're never recorded.</td><td>The replay sees today's time. A divergence if it's printed. <code>clock_gettime</code> and <code>gettimeofday</code> are fine with <code>acpi_pm</code>.</td></tr>
       <tr><td>Races inside overlapping user code</td><td>Memory accesses make no syscall. <code>-T</code> runs the stretches one after another, which can pick the other winner.</td><td>A divergence if the result is later printed or sent. A crash can happen in only one of the two runs.</td></tr>
       <tr><td>Crash handlers that wait for other threads (Redis)</td><td>They signal the other threads, and those signals aren't replayed.</td><td>The same fault, then a divergence in the handler.</td></tr>
       <tr><td>Go programs</td><td>Goroutines hop between threads, so per-thread records don't line up.</td><td>A divergence, sometimes after reaching the same fault.</td></tr>
@@ -348,11 +421,11 @@ sudo ./sysrr_replay -p $(sudo podman inspect -f '{{.State.Pid}}' NEW) -g 1 rec.l
 
   -g N       generation to replay
   -S         syscalls start in recorded order
-  -T         one thread runs at a time, in the order calls returned
+  -T         one thread runs at a time, in recorded order
   -e WHAT    at the end: stop, live or kill
   -w FILE    save what the target writes to stdout and stderr
   -c         only warn when data differs
-  -v         print every syscall
+  -v         print every syscall, and each timing-only call dropped or added
   -N         don't install real fds (for comparison)
 
 <span class="dim"># tests</span>

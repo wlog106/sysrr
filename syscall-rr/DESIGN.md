@@ -388,14 +388,52 @@ a `MAP_SHARED` page right after `accept4` returns, with no syscall.
 
 `-T` runs one thread at a time. A thread runs user code from the moment its
 syscall is answered until its next syscall reaches the supervisor (or until
-it enters a CONTINUE'd syscall that blocks: futex waits, `rt_sigsuspend`,
-`wait4`, exit). Syscalls are released in the order they *returned* in the
-recording (`ts_exit`), which is the order in which the stretches of user
-code started. A thread that doesn't come back within 2 s is no longer
-waited for, so a blocking call missing from that list can't deadlock the
-replay. Two stretches that overlapped live become sequential, ordered by
-their start; that fixed nginx entirely, but it can't reproduce an
-interleaving decided by nanoseconds *inside* two overlapping stretches.
+it enters a CONTINUE'd syscall that blocks: `rt_sigsuspend`, `wait4`, exit,
+a futex wait the recording lacks). A thread that doesn't come back within
+2 s is no longer waited for, so a blocking call missing from that list can't
+deadlock the replay.
+
+Each record stands for the stretch of user code that follows it, up to the
+thread's next syscall. Two stretches that overlapped live become sequential,
+and the log can't say in which order: what they did to shared memory made no
+syscall. Since 2026-11-12 the order is the one in which the stretches
+*ended* (`order_serial`: a record's place is the entry of the thread's next
+syscall; `seq` gives that order exactly, and entry timestamps are pulled
+into line with it). Before, it was the order in which they started
+(`ts_exit`). Why the end: a thread coming out of a syscall starts cold and at
+an unsteady pace, while the way into the next syscall is short; and code
+that works under a lock usually makes a syscall right after releasing it (a
+futex wake, a write). Measured on a thread pool: by end 4 of 6 recordings
+replayed to the last line, by start 1 of 6; nginx and the two-thread test
+pass either way. It still can't reproduce an interleaving decided inside two
+stretches that ended within the same few hundred nanoseconds.
+
+More rules make `-T` work for programs built on locks (2026-11-12):
+
+* **Recorded lock waits are answered, not run.** A `FUTEX_WAIT` in the log
+  is held until its place in the order and then answered with the recorded
+  result. Run for real it would return when the kernel likes, and all the
+  threads woken by one broadcast would race for the mutex again. Returning
+  from a wait without a real wake is allowed: every futex user checks the
+  word again. Wakes still run for real (a wait the recording lacks, which
+  runs for real, needs them).
+* **A stretch that ends by waiting for a mutex** (futex value 2, "locked,
+  with waiters") takes the place of the stretch after the wait: one at a
+  time nobody can find a lock taken, so it must come after the holder.
+* **The start is held.** A restored thread that was in user code runs until
+  its first syscall before any listener can stop it, and all threads would
+  do that at once. With `-T` every thread with records is put in a ptrace
+  stop before the process is resumed and released when its first recorded
+  syscall is next in the order (`hold_thread`, `start_threads`).
+* **A lock held across a syscall.** If the thread whose turn it is sleeps in
+  a futex wait that isn't in the recording, the lock's holder is parked
+  behind it. A parked thread whose recorded call had returned before the
+  waiter's stretch ended goes first; a parked futex wake on the same address
+  goes first whenever it was recorded (`lock_holder_first`). This replaced a
+  2 s stall followed by a blind guess.
+* A wait the thread never left in the recording (in flight when it stopped)
+  is held, not run: run for real it would take the wake-up meant for a
+  thread whose recorded wait is being answered.
 
 ### Threads with nothing recorded
 

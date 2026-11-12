@@ -8,6 +8,9 @@ https://claude.ai/artifact/BrqbnVeMN3qqisG1nxenKb (publish the same file
 path to update it; from another conversation pass that URL). Keep this
 file current when the replay changes.
 
+Status (2026-11-12): 11 more targets added to the suite (25 tests); they found
+the bugs listed under "More targets (2026-11-12)". `-T` changed a lot: read that
+section before touching it.
 Status (2026-11-06): working; `tests/run_all.sh` is the suite (see "Test suite"
 below). Earlier status (2026-11-03): working. Same-machine and cross-machine
 (claude-dev → claude-test) restore + replay pass for ckpt_target,
@@ -133,9 +136,11 @@ ckpt.tar.gz -----------------------------> restore (leave-stopped) -> pid
   remember theirs); `pidfd_for(tid)` (Tgid from /proc) for pidfd_getfd;
   stop/kill/SIGCONT go to every process; the replay ends when every
   listener hung up. Queues are per ns_tid, so processes need nothing else.
-* **`-T` serial order (2026-11-03)**: one thread runs user code at a time;
-  syscalls are released in the order they *returned* in the recording
-  (`ts_exit`, `byexit[]`). A thread is "running" from its answer until its
+* **`-T` serial order (2026-11-03, reworked 2026-11-12: see "More targets")**:
+  one thread runs user code at a time. Until 2026-11-12
+  syscalls were released in the order they *returned* in the recording
+  (`ts_exit`); now in the order the thread's *next* syscall was entered
+  (`order_serial`, `byexit[]` keeps its name). A thread is "running" from its answer until its
   next notification, except after a CONTINUE that blocks (futex
   WAIT/WAIT_BITSET/LOCK_PI*, rt_sigsuspend, pause, wait4, waitid, exit*).
   Safety valve: a running thread silent for 2 s is no longer waited for.
@@ -291,6 +296,74 @@ ckpt.tar.gz -----------------------------> restore (leave-stopped) -> pid
   same confinement as the recorded container.
 
 
+## More targets (2026-11-12)
+
+The user asked for more targets. Eleven were added; what each one found:
+
+| target | result | what it found |
+|---|---|---|
+| `net_target` (TCP+UDP loopback, epoll) | pass | nothing |
+| `file_target` (file tree, 200 KB reads) | pass | nothing |
+| `reexec_target` (execve of itself) | pass | hundreds of pointer warnings after execve (now silent: addresses are new after an execve of the process itself, `has_execed`) |
+| `sigsync_target` (self-sent signals) | pass after fixes | SIGPIPE never arrived with a faked EPIPE; `rt_sigqueueinfo` was faked, so the signal was never sent; a real pending signal was never taken by the faked `sigwaitinfo` |
+| `pool_target` (thread pool) | 4 of 6 one-by-one, burst rarely | the whole `-T` rework below |
+| `perl_target.pl` | pass | `time()` is not recorded even with acpi_pm (RECORD.md, vDSO gap) |
+| `py_async_target.py` (asyncio) | pass | nothing |
+| `py_threads_target.py` (GIL) | reported | a sleep's absolute deadline was compared as data (fixed); the GIL itself stays a limit |
+| `py_mp_target.py` (multiprocessing) | reported | same GIL limit (each process has a queue feeder thread) |
+| memcached 1.6, 4 clients | pass 3 of 3 | lock held across a syscall stalled the replay; buffer addresses inside an iovec array were compared as data |
+
+Fixes, all in `sysrr_replay.c`:
+
+* **SIGPIPE** (`return_with_signal`): a faked write-like call with recorded
+  -EPIPE (and no MSG_NOSIGNAL) gets the signal the kernel would send. Same ptrace
+  move as `pin_address`: seize, interrupt (the notification wait returns
+  -ERESTARTSYS), set rax to the recorded result and orig_rax to -1 (nothing to
+  restart), tgkill, detach. The kernel delivers the signal on top of that result:
+  handler first, then the program sees EPIPE; or death by SIGPIPE. Sending the
+  signal while the thread is parked would restart the call; after the answer the
+  program would run a little first. This primitive would also serve to replay
+  timer and outside signals at a syscall boundary (not done).
+* `rt_sigqueueinfo`, `rt_tgsigqueueinfo` run for real like `kill`.
+  `rt_sigtimedwait` and a read from a signalfd run for real when the recorded
+  signal is really pending (`takes_pending_signal`), else they stay faked.
+* Sleeps are timing-only, so their time argument is not checked either.
+* iovec arrays and msghdrs: lengths are compared, addresses are not (counted in
+  the totals: "passed buffers at other addresses"). With threads the heap is
+  laid out by who allocated first; the bytes are still compared piece by piece.
+* **`-T`**, see DESIGN.md "Serial order" for the rules: order by the end of
+  each stretch; recorded futex waits answered at their place instead of run;
+  a mutex wait (value 2) moves its stretch behind the holder; threads held by
+  ptrace at restore and started in order; a lock holder parked behind the
+  thread in turn goes first; a wait never left in the recording is held.
+  `-v` now prints timing-only calls ("drop" = recorded, not made; "real" = made,
+  not recorded): the fastest way to see where a replay leaves the recording.
+
+Measured (same machine, 2026-11-12). Old = the replayer before this work, on
+the same recordings:
+
+* pool one by one: old 0 of 6 (died in the first 30 rounds, often the first);
+  new 4 of 6 to the last line during the work, 5 of 8 with the final code. Of
+  the 3 failures, 2 came within the first 30 records: the start of a generation
+  is still weak when threads were restarted inside condition waits (-EAGAIN on
+  the restarted wait, main in its first stretch). To get a case: rerun
+  `TARGET=pool_target REPLAY_OPTS="-T -v" tests/test_replay.sh` until one fails.
+* pool burst (4 workers woken by one broadcast): old stopped within 2 lines;
+  new typically reaches line 25 to 55 of 55, 2 of 6 complete. What is left is
+  physical: two workers release the lock and enter the kernel within the same
+  few hundred nanoseconds, in the other order.
+* Order by end / mixed / by start, same 6 pool recordings: 4 / 3 / 1 complete.
+  The two-thread test: 4 of 4 with each rule.
+* memcached, 4 clients on their own keys: 3 of 3. With shared keys
+  (`MODE=race`): 1 of 3 with 2 clients, diverges with 4 or 8, after 1300 to 4600
+  of about 4700 syscalls: two requests for one key reach two threads within
+  microseconds.
+
+Method that worked: keep one recording and its checkpoint, restore and replay it
+again after each change (a replay of the same log is deterministic now), and
+compare with the old binary on the same recording. Rebuilding a target binary
+invalidates saved checkpoints (CRIU checks the file: restore fails -52).
+
 ## Replay limitations (tell the user when relevant)
 
 * CONTINUE'd syscalls: their return value can't be checked (seccomp never
@@ -318,8 +391,15 @@ ckpt.tar.gz -----------------------------> restore (leave-stopped) -> pid
   syscall or reading /dev/urandom is fine. No per-process way to turn the vDSO
   off; booting the record machine with `vdso=0` would turn it into syscalls
   (clock too), not tried. tests/rand_target.c.
-* Who won a contended lock is not in the log. Python threads (GIL): the holder is
-  parked behind a thread waiting for the GIL -> "no progress" after 20 s.
+* Who won a contended lock is not in the log. `-T` infers it from the futex calls
+  (2026-11-12) and gets thread pools and memcached through most of the time; two
+  lock releases within the same few hundred nanoseconds can still come out the
+  other way. Python threads (GIL, handed over on a 5 ms timer): followed for a
+  few dozen calls, then "no progress" after 20 s or a divergence.
+* `time()` and the `*_COARSE` clocks come from the vDSO data page even with
+  acpi_pm: not recorded, the replay sees the real time.
+* Signals from a timer or from outside are still not replayed (SIGPIPE and
+  signals a program sends itself are).
 * A file received over a socket (SCM_RIGHTS): only the number is recorded, the
   stand-in is /dev/null, a real mmap of it fails (sc_known.txt).
 * semctl(GETALL): output not recorded (sc_known.txt).
@@ -378,6 +458,16 @@ Last full suite: 14 of 14, 2 rounds, both machines (2026-11-06). See the guide's
   ssh never returns. Watch long runs with a Monitor: a hang here cost 90 minutes.
 
 ## Test suite (2026-11-06): tests/run_all.sh
+
+2026-11-12: 25 tests. Two rounds here: 24 passed both; `files` failed one round
+because the target kept its tree in /dev/shm, which podman archives after the
+dump while the target runs on ("Can't add file ... to tar"). Targets that make
+files now use `/scratch`, a tmpfs test_replay.sh mounts (CRIU saves a tmpfs
+during the dump): `files` and `perl` then 4 of 4. claude-test was unreachable
+(no route to host), so nothing new was run across machines. `pool`,
+`pool-burst`, `py-threads`, `py-procs` are EXPECT=honest: a pass means "matched,
+or stopped by itself with a report". The old replayer's 14 tests passed before
+the work (baseline) and after.
 
 Measured flake rates: mt_target -S failed 2 of 9 runs on this machine (user code
 overlaps: see limitations), -T passed 6 of 6, so the suite uses -T and it is the

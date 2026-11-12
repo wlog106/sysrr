@@ -17,3 +17,5 @@ syscall-rr/tests/real/pbzip2/pbzip2
 syscall-rr/tests/real/pbzip2/pbzip2_delay
 # large test input (45 MB)
 syscall-rr/tests/real/pbzip2/big.txt
+# generated from the kernel headers by the Makefile
+syscall-rr/syscall_names.h

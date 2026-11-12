@@ -248,6 +248,8 @@ struct ent {                        /* one recorded syscall */
 	const struct rec_data **d;
 	unsigned nd, cap;
 	unsigned done;
+	u64 key;                    /* -T: its place in the serial order */
+	u64 enter;                  /* -T: ts_enter, made to agree with seq */
 };
 
 struct thr {                        /* one recorded thread */
@@ -261,6 +263,10 @@ struct thr {                        /* one recorded thread */
 	int running;                /* -T: answered, runs user code until its next syscall */
 	int seen;                   /* it has made a syscall during this replay */
 	int past_end;               /* asked for a syscall after its last record */
+	int lock_wait;              /* -T: sleeps in a real futex wait the recording lacks */
+	u64 wait_addr;              /* ... on this futex */
+	pid_t start_tid;            /* -T: held in a ptrace stop until its turn to start */
+	u64 start_key;              /* ... which is when it made its first syscall */
 };
 
 static struct ent *ents;            /* sorted by seq */
@@ -269,7 +275,7 @@ static struct thr *thrs;
 static size_t nthrs;
 static size_t remaining;            /* records not consumed yet */
 static size_t gnext;                /* strict mode: index of the next ent in seq order */
-static struct ent **byexit;         /* -T: all ents in ts_exit order */
+static struct ent **byexit;         /* -T: all ents in serial order (order_serial) */
 static size_t xnext;                /* -T: index of the next one */
 static unsigned long n_skip;        /* signal-interrupted records skipped */
 static unsigned long n_child;       /* no entry seen: new threads, calls refused by the container */
@@ -437,7 +443,8 @@ static int passthrough(long nr)
 	case SYS_set_tid_address: case SYS_set_robust_list: case SYS_rseq:
 	case SYS_arch_prctl: case SYS_prctl: case SYS_futex: case SYS_sched_yield:
 	case SYS_getpid: case SYS_gettid: case SYS_kill: case SYS_tgkill:
-	case SYS_tkill: case SYS_membarrier: case SYS_restart_syscall:
+	case SYS_tkill: case SYS_rt_sigqueueinfo: case SYS_rt_tgsigqueueinfo:
+	case SYS_membarrier: case SYS_restart_syscall:
 	case SYS_chdir: case SYS_fchdir:
 		return 1;
 	/* The fd table: faked fd-creating calls install real fds at the
@@ -467,12 +474,75 @@ static int is_standin(pid_t pid, u64 fd)
 	return !strncmp(l, "/memfd:" STANDIN_NAME, sizeof("/memfd:" STANDIN_NAME) - 1);
 }
 
+static int futex_waits(u64 op)
+{
+	op &= 0x7f;
+	return op == 0 /* WAIT */ || op == 9 /* WAIT_BITSET */;
+}
+
+/* is signal sig waiting for this thread (sent to it or to its process)? */
+static int sig_pending(pid_t tid, int sig)
+{
+	char path[64], line[256];
+	int yes = 0;
+
+	if (sig < 1 || sig > 64)
+		return 0;
+	snprintf(path, sizeof(path), "/proc/%d/status", tid);
+	FILE *f = fopen(path, "r");
+	if (!f)
+		return 0;
+	while (fgets(line, sizeof(line), f))
+		if (!strncmp(line, "SigPnd:", 7) || !strncmp(line, "ShdPnd:", 7))
+			yes |= (int)(strtoull(line + 7, NULL, 16) >> (sig - 1)) & 1;
+	fclose(f);
+	return yes;
+}
+
+static int fd_is(pid_t pid, u64 fd, const char *what)
+{
+	char p[64], l[128];
+	snprintf(p, sizeof(p), "/proc/%d/fd/%llu", pid, (unsigned long long)fd);
+	ssize_t n = readlink(p, l, sizeof(l) - 1);
+	if (n <= 0)
+		return 0;
+	l[n] = 0;
+	return !strcmp(l, what);
+}
+
+/* sigwaitinfo, sigtimedwait, or a read from a signalfd, whose recorded signal is
+ * pending in the replay as well */
+static int takes_pending_signal(const struct seccomp_notif *req, const struct ent *e)
+{
+	if (req->data.nr == SYS_rt_sigtimedwait)
+		return sig_pending(req->pid, e->s->ret);
+	if (req->data.nr == SYS_read && e->nd && e->d[0]->kind == D_OUT && e->d[0]->len >= 4 &&
+	    fd_is(req->pid, req->data.args[0], "anon_inode:[signalfd]")) {
+		u32 signo;
+		memcpy(&signo, e->d[0]->data, 4);
+		return sig_pending(req->pid, signo);
+	}
+	return 0;
+}
+
 /* run this call for real rather than answer from the log? */
 static int runs_real(const struct seccomp_notif *req, const struct ent *e)
 {
 	long nr = req->data.nr;
 	s64 ret = e->s->ret;
 
+	/* -T: a recorded wait is not entered for real.  It is held until the moment
+	 * it returned in the recording and then answered, so the woken thread runs
+	 * its next stretch of user code in turn like every other (a real wait
+	 * returns when the kernel likes, and all the threads woken together would
+	 * race for the lock again).  Returning without a real wake is allowed: every
+	 * futex user checks the word again. */
+	if (opt_serial && nr == SYS_futex && futex_waits(req->data.args[1]))
+		return 0;
+	/* A signal this process sent to itself is really pending (kill and sigqueue
+	 * run for real): the call that takes it must run too, or it stays pending. */
+	if (ret > 0 && takes_pending_signal(req, e))
+		return 1;
 	if (passthrough(nr)) {
 		/* It failed live: fail it here too.  A real attempt might succeed: the
 		 * limit that made mmap fail was set by a setrlimit that was faked. */
@@ -679,9 +749,11 @@ static void kill_all(int sig)
 }
 static enum { RUN, ENDED, DIVERGED, LIVE } state = RUN;
 static int relax_order;
+static struct thr *jump_thr;        /* -T: this thread may go ahead of its turn (lock_holder_first) */
+static unsigned long n_jump, n_ptrdiff;
 static unsigned long n_relaxed;
 static unsigned long n_fake, n_pass, n_argwarn, n_inwarn, in_bytes, out_bytes;
-static unsigned long n_fds, n_fdwarn, n_pin, n_pidpin, n_slack;
+static unsigned long n_fds, n_fdwarn, n_pin, n_pidpin, n_slack, n_sig;
 static int troot = -1;              /* the container's root directory */
 static volatile sig_atomic_t interrupted;
 
@@ -931,6 +1003,13 @@ static void print_totals(void)
 	printf("   fds installed %lu%s, fd warnings %lu, mappings pinned %lu, new thread ids set %lu, "
 	       "timing-only differences (futex, sleep, signal return, monotonic clock) %lu\n", n_fds,
 	       opt_nofd ? " (-N: installation off)" : "", n_fdwarn, n_pin, n_pidpin, n_slack);
+	if (n_ptrdiff)
+		printf("   %lu call(s) passed buffers at other addresses than recorded (same bytes: the "
+		       "heap is laid out differently)\n", n_ptrdiff);
+	if (n_jump)
+		printf("   %lu time(s) a thread went ahead of one that was waiting for its lock\n", n_jump);
+	if (n_sig)
+		printf("   SIGPIPE delivered with a failed write %lu time(s)\n", n_sig);
 	fflush(stdout);
 }
 
@@ -939,6 +1018,9 @@ static void finish(const char *why)
 	printf("\n== %s ==\n", why);
 	print_totals();
 	report_live_end();
+	for (size_t i = 0; i < nthrs; i++)      /* -T: threads that never got to start */
+		if (thrs[i].start_tid)
+			ptrace(PTRACE_DETACH, thrs[i].start_tid, 0, 0), thrs[i].start_tid = 0;
 	switch (opt_end) {
 	case END_LIVE:
 		state = LIVE;
@@ -1006,6 +1088,10 @@ static int check_inputs(struct thr *t, const struct ent *e, const struct seccomp
 	const u64 *a = (const u64 *)req->data.args;
 	int bad = 0;
 
+	/* how long a sleep lasts, or until when, is timing: an absolute deadline
+	 * is computed from the monotonic clock, which is read for real */
+	if (req->data.nr == SYS_nanosleep || req->data.nr == SYS_clock_nanosleep)
+		return 0;
 	for (unsigned i = 0; i < e->nd; i++) {
 		const struct rec_data *d = e->d[i];
 		if (d->kind != D_IN && d->kind != D_STR)
@@ -1033,6 +1119,22 @@ static int check_inputs(struct thr *t, const struct ent *e, const struct seccomp
 			continue;
 		}
 		in_bytes += d->len;
+		/* An iovec array or a msghdr holds addresses.  Where a buffer sits is
+		 * not what the program says: with several threads allocating, the heap
+		 * is laid out by who asked first.  The lengths must match, and the
+		 * bytes the addresses lead to are compared piece by piece below. */
+		if (d->idx == 0xffff || d->idx == 0xfffe) {
+			int ptrs = 0;
+			for (unsigned k = 0; k + 8 <= d->len; k += 8) {
+				unsigned o = (d->offset + k) % (d->idx == 0xffff ? 16 : 56);
+				int is_ptr = d->idx == 0xffff ? o == 0 : (o == 0 || o == 16 || o == 32);
+				if (is_ptr && memcmp(now + k, d->data + k, 8)) {
+					memcpy(now + k, d->data + k, 8);
+					ptrs = 1;
+				}
+			}
+			n_ptrdiff += ptrs;
+		}
 		if (memcmp(now, d->data, d->len)) {
 			unsigned k = 0, diff = 0;
 			while (k < d->len && now[k] == (unsigned char)d->data[k])
@@ -1570,6 +1672,66 @@ static int pin_address(const struct seccomp_notif *req, const struct ent *e)
 	return 0;
 }
 
+/* --- a signal that comes with a syscall's result -----------------------------
+ *
+ * A write to a pipe without readers fails with EPIPE and the kernel sends the
+ * writer SIGPIPE, which is handled before the write returns to the program.  A
+ * faked write must do the same.  Sending the signal while the thread is parked
+ * would interrupt the notification wait and make the kernel restart the call;
+ * sending it after the answer lets the program run a little first.  So, as for
+ * pin_address: seize the thread, interrupt it (the wait returns -ERESTARTSYS and
+ * the thread stops on its way out), put the recorded result in rax with no
+ * syscall to restart, queue the signal and detach.  The kernel then delivers the
+ * signal on top of that result, as it did live: handler first, then the program
+ * sees EPIPE; or the default action, death by SIGPIPE.  The notification is gone
+ * (interrupted), so it is not answered. */
+static int sends_sigpipe(const struct seccomp_notif *req)
+{
+	const u64 *a = (const u64 *)req->data.args;
+
+	switch (req->data.nr) {
+	case SYS_write: case SYS_writev: case SYS_pwrite64: case SYS_pwritev:
+	case SYS_pwritev2: case SYS_sendfile: case SYS_splice: case SYS_vmsplice:
+	case SYS_tee: case SYS_copy_file_range:
+		return 1;
+	case SYS_sendto: case SYS_sendmmsg:
+		return !(a[3] & MSG_NOSIGNAL);
+	case SYS_sendmsg:
+		return !(a[2] & MSG_NOSIGNAL);
+	}
+	return 0;
+}
+
+static int return_with_signal(const struct seccomp_notif *req, s64 ret, int sig)
+{
+	pid_t tid = req->pid;
+	struct user_regs_struct r;
+	int st;
+
+	if (ptrace(PTRACE_SEIZE, tid, 0, 0) || ptrace(PTRACE_INTERRUPT, tid, 0, 0))
+		return -1;
+	for (;;) {
+		if (waitpid(tid, &st, __WALL) < 0 || !WIFSTOPPED(st)) {
+			ptrace(PTRACE_DETACH, tid, 0, 0);
+			return -1;
+		}
+		if (st >> 16 == PTRACE_EVENT_STOP)
+			break;
+		ptrace(PTRACE_CONT, tid, 0, (void *)(long)WSTOPSIG(st));
+	}
+	ptrace(PTRACE_GETREGS, tid, 0, &r);
+	if ((long)r.orig_rax != req->data.nr || (long)r.rax != -512 /* ERESTARTSYS */) {
+		ptrace(PTRACE_DETACH, tid, 0, 0);
+		return -1;
+	}
+	r.rax = ret;
+	r.orig_rax = -1;                /* not a syscall any more: nothing to restart */
+	ptrace(PTRACE_SETREGS, tid, 0, &r);
+	syscall(SYS_tgkill, tgid_of(tid), tid, sig);
+	ptrace(PTRACE_DETACH, tid, 0, 0);
+	return 0;
+}
+
 static struct ent *next_ent(struct thr *t)
 {
 	while (t->pos < t->n && t->q[t->pos]->done)
@@ -1590,23 +1752,138 @@ static struct ent *next_ent(struct thr *t)
  * clone does, but the child only exists once that clone has been released.  An
  * execve: after vfork the parent wakes in the middle of the child's execve and
  * its next calls return first, but it cannot wake until the execve has run. */
-static u64 release_time(const struct rec_syscall *r)
+static u64 release_time(const struct ent *e)
 {
+	const struct rec_syscall *r = e->s;
 	int early = is_clone(r->nr) || r->nr == SYS_execve || r->nr == SYS_execveat;
-	return early && r->ts_enter ? r->ts_enter : r->ts_exit;
+	return early && e->enter ? e->enter : r->ts_exit;
 }
 
 static int cmp_exit(const void *a, const void *b)
 {
 	const struct rec_syscall *x = (*(struct ent * const *)a)->s, *y = (*(struct ent * const *)b)->s;
-	u64 tx = release_time(x), ty = release_time(y);
+	u64 tx = (*(struct ent * const *)a)->key, ty = (*(struct ent * const *)b)->key;
 	if (tx != ty)
 		return tx < ty ? -1 : 1;
 	return x->h.seq < y->h.seq ? -1 : x->h.seq > y->h.seq;
 }
 
+/* Each record stands for the stretch of user code that follows it, up to the
+ * thread's next syscall, and -T runs the stretches one after the other.  Two that
+ * overlapped in the live run need an order, and the log cannot give it: what they
+ * did to shared memory made no syscall.  The guess is the order in which they
+ * *ended* (the next syscall was entered: seq gives that order exactly).  A thread
+ * coming out of a syscall starts cold and at an unsteady pace; the way into the
+ * next syscall is short.  And code that works under a lock usually ends with a
+ * syscall right after releasing it (a futex wake, a write).  Measured on thread
+ * pools (2026-11-12): by end 4 of 6 recordings replayed to the last line, by start
+ * 1 of 6; the nginx and two-thread tests pass either way.
+ * The place is a moment inside the stretch, so stretches that did not overlap
+ * keep their order whatever the rule. */
+static void order_serial(void)
+{
+	/* seq is the true order of syscall entries.  The entry timestamp is read
+	 * just after seq is taken, so two entries less than a microsecond apart
+	 * can have timestamps the other way round: pull the earlier one down. */
+	u64 next = ~0ULL;
+	for (size_t i = nents; i-- > 0;) {
+		ents[i].enter = ents[i].s->ts_enter;
+		if (!ents[i].enter)
+			continue;
+		if (ents[i].enter >= next)
+			ents[i].enter = next - 1;
+		next = ents[i].enter;
+	}
+	for (size_t i = 0; i < nthrs; i++) {
+		struct thr *t = &thrs[i];
+		const struct ent *nx = NULL;            /* the thread's next record */
+
+		for (size_t j = t->n; j-- > 0;) {
+			struct ent *e = t->q[j];
+			const struct rec_syscall *r = e->s, *n = nx ? nx->s : NULL;
+
+			if (e->done)
+				continue;
+			e->key = release_time(e);
+			if (is_clone(r->nr) || r->nr == SYS_execve || r->nr == SYS_execveat || !n)
+				;
+			/* It ends by waiting for a lock (value 2: "locked, with waiters",
+			 * the convention of glibc, musl, Go, Rust): it found the lock
+			 * taken.  One at a time, nobody can find a lock taken, so it goes
+			 * where the wait ended and it got the lock: after the holder. */
+			else if (n->nr == SYS_futex && futex_waits(n->args[1]) && (u32)n->args[2] == 2 &&
+				 nx->key > e->key)
+				e->key = nx->key;
+			else if (nx->enter > e->key)
+				e->key = nx->enter;
+			nx = e;
+		}
+	}
+	byexit = malloc(nents * sizeof(*byexit));
+	for (size_t i = 0; i < nents; i++)
+		byexit[i] = &ents[i];
+	qsort(byexit, nents, sizeof(*byexit), cmp_exit);
+}
+
+/* -T, the start.  A restored thread that was in user code runs until its first
+ * syscall before any listener can hold it, and all the threads would do that at
+ * once: the first stretch of each would be a free-for-all (one takes a lock and
+ * parks at its syscall, the others pile up behind it).  So each thread with
+ * records is kept in a ptrace stop from before the process is resumed, and
+ * released when its first recorded syscall is the next thing in the order. */
+static void hold_thread(struct thr *t, pid_t tid)
+{
+	const struct ent *first = NULL;
+	int st;
+
+	for (size_t j = 0; j < t->n && !first; j++)
+		if (!t->q[j]->done)
+			first = t->q[j];
+	if (!first || !first->enter)
+		return;
+	if (ptrace(PTRACE_SEIZE, tid, 0, 0))
+		return;
+	if (ptrace(PTRACE_INTERRUPT, tid, 0, 0) || waitpid(tid, &st, __WALL) < 0 || !WIFSTOPPED(st)) {
+		ptrace(PTRACE_DETACH, tid, 0, 0);
+		return;
+	}
+	t->start_tid = tid;
+	t->start_key = first->enter;
+}
+
+static struct thr *first_held(void)
+{
+	struct thr *best = NULL;
+	for (size_t i = 0; i < nthrs; i++)
+		if (thrs[i].start_tid && (!best || thrs[i].start_key < best->start_key))
+			best = &thrs[i];
+	return best;
+}
+
+static struct thr *running_thread(const struct thr *except);
+
+/* start the next held thread if its turn has come (always, if force) */
+static int start_threads(int force)
+{
+	struct thr *t = first_held();
+
+	if (!t || running_thread(NULL))
+		return 0;
+	while (xnext < nents && byexit[xnext]->done)
+		xnext++;
+	if (!force && xnext < nents && byexit[xnext]->key < t->start_key)
+		return 0;
+	ptrace(PTRACE_DETACH, t->start_tid, 0, 0);
+	t->start_tid = 0;
+	t->running = 1;
+	return 1;
+}
+
 static int next_exit_is(const struct ent *e)
 {
+	struct thr *h = first_held();
+	if (h && h->start_key <= e->key)
+		return 0;               /* a thread has to start first */
 	while (xnext < nents && byexit[xnext]->done)
 		xnext++;
 	return xnext < nents && byexit[xnext] == e;
@@ -1726,6 +2003,24 @@ static int same_call(const struct ent *e, const struct seccomp_notif *req)
 					     (e->s->args[1] & 0x7f) == (req->data.args[1] & 0x7f));
 }
 
+/* processes that have called execve during the replay */
+static pid_t execed[256];
+static int nexeced;
+
+static int has_execed(pid_t g)
+{
+	for (int i = 0; i < nexeced; i++)
+		if (execed[i] == g)
+			return 1;
+	return 0;
+}
+
+static void note_exec(pid_t g)
+{
+	if (!has_execed(g))
+		execed[nexeced++ % 256] = g, nexeced = nexeced > 256 ? 256 : nexeced;
+}
+
 /* Handle one notification.  Returns 1 if it was answered or deliberately
  * held, 0 if it must wait for its turn (strict mode). */
 static int handle(struct seccomp_notif *req)
@@ -1743,6 +2038,7 @@ static int handle(struct seccomp_notif *req)
 	t = thread_for(ns);
 	if (t) {
 		t->running = 0;                 /* it is at a syscall now */
+		t->lock_wait = 0;
 		if (!t->seen) {                 /* new process: can be signalled, its fds read */
 			t->seen = 1;
 			pidfd_for(req->pid);
@@ -1771,11 +2067,31 @@ static int handle(struct seccomp_notif *req)
 		e = next_ent(t);
 	}
 	while (e && is_timing_only(e->s->nr, e->s->args[0]) && !same_call(e, req)) {
+		if (opt_verbose) {
+			fmt_call(b, sizeof(b), e->s->nr, e->s->args, 3);
+			printf("#%-7llu %-5u drop %s (recorded, not made now: timing only)\n",
+			       (unsigned long long)e->s->h.seq, ns, b);
+		}
 		consume(e);
 		n_slack++;
 		e = next_ent(t);
 	}
 	int timing = is_timing_only(req->data.nr, req->data.args[0]);
+	/* -T: the wait this thread was still in when the recording stopped (its
+	 * record has no result and was skipped at load).  It never returned, so it is
+	 * held.  Run for real it would take a wake-up meant for a thread whose
+	 * recorded wait is being answered from the log. */
+	if (opt_serial && !e && t->n && req->data.nr == SYS_futex && futex_waits(req->data.args[1]) &&
+	    is_restart_ret(t->q[t->n - 1]->s->ret) && same_call(t->q[t->n - 1], req)) {
+		if (opt_verbose)
+			printf("         %-5u held in the wait it never left in the recording\n", ns);
+		t->held_id = req->id, t->held_lfd = lfd;
+		t->held_nr = req->data.nr;
+		t->past_end = 1;
+		if (remaining == 0)
+			end_reached(tgid_of(req->pid));
+		return 1;
+	}
 	if (timing && !e && remaining > 0) {
 		/* A wait runs for real too: holding it would keep another thread waiting
 		 * for this one (pthread_cond_destroy does).  It can do no harm: anything
@@ -1785,11 +2101,17 @@ static int handle(struct seccomp_notif *req)
 	}
 	if (timing && e && !same_call(e, req)) {        /* not in the recording: it still runs */
 		n_slack++;
+		if (opt_verbose) {
+			fmt_call(b, sizeof(b), req->data.nr, (const u64 *)req->data.args, 3);
+			printf("         %-5u real %s (not in the recording: timing only)\n", ns, b);
+		}
 		respond(req->id, 1, 0);
 		/* (a real sleep: the others go on, it may be polling for their work) */
 		if (opt_serial)
 			t->running = !blocks(req) && req->data.nr != SYS_nanosleep &&
 				     req->data.nr != SYS_clock_nanosleep;
+		if (opt_serial && req->data.nr == SYS_futex && blocks(req))
+			t->lock_wait = 1, t->wait_addr = req->data.args[0];
 		return 1;
 	}
 	if (!e) {
@@ -1805,7 +2127,7 @@ static int handle(struct seccomp_notif *req)
 	if (!relax_order) {
 		if (opt_strict && !global_next_seq_is(e))
 			return 0;               /* not its turn yet */
-		if (opt_serial && (running_thread(t) || !next_exit_is(e)))
+		if (opt_serial && (running_thread(t) || (t != jump_thr && !next_exit_is(e))))
 			return 0;               /* someone else runs, or not its turn */
 	}
 
@@ -1836,8 +2158,13 @@ static int handle(struct seccomp_notif *req)
 
 	/* arguments: pointers too, the address space is the restored one */
 	int na = t->pinned == e ? 0 : nargs(req->data.nr);
+	int fresh = na && has_execed(tgid_of(req->pid));
 	for (int i = 0; i < na; i++)
 		if (e->s->args[i] != req->data.args[i]) {
+			/* after an execve of its own the process is laid out at random
+			 * again: addresses differ from the recording, and that is fine */
+			if (fresh && e->s->args[i] >= 0x10000 && req->data.args[i] >= 0x10000)
+				continue;
 			n_argwarn++;
 			printf("   warning: #%llu %s arg%d is %#llx, recorded %#llx\n",
 			       (unsigned long long)e->s->h.seq, sysname(e->s->nr), i,
@@ -1876,13 +2203,25 @@ static int handle(struct seccomp_notif *req)
 	int fr = fk == FD_NONE ? 1 : install_fds(e, req, fk);
 	if (fr < 0)
 		return 1;                       /* interrupted: it will come again */
-	if (fr > 0 && respond(req->id, cont, e->s->ret))
-		return 1;
+	/* a write to a pipe or socket nobody reads: the kernel sends SIGPIPE too */
+	int piped = fr > 0 && !cont && e->s->ret == -EPIPE && sends_sigpipe(req);
+	if (piped && return_with_signal(req, e->s->ret, SIGPIPE) == 0) {
+		n_sig++;
+	} else if (fr > 0) {
+		if (respond(req->id, cont, e->s->ret))
+			return 1;
+		if (piped) {            /* second best: just after the call returns */
+			syscall(SYS_tgkill, tgid_of(req->pid), req->pid, SIGPIPE);
+			n_sig++;
+		}
+	}
 	if (opt_serial)
-		t->running = !blocks(req);
+		t->running = !blocks(req) || (!cont && req->data.nr == SYS_futex);
 
 	if (is_clone(req->data.nr) && e->s->ret > 0)
 		expect_child(e->s->ret);
+	if (cont && (req->data.nr == SYS_execve || req->data.nr == SYS_execveat))
+		note_exec(tgid_of(req->pid));
 	cont ? n_pass++ : n_fake++;
 	if (opt_verbose) {
 		fmt_call(b, sizeof(b), e->s->nr, e->s->args, nargs(e->s->nr));
@@ -1894,6 +2233,7 @@ static int handle(struct seccomp_notif *req)
 }
 
 static void on_int(int sig) { (void)sig; interrupted = 1; }
+
 
 #define NO_PROGRESS_SECS 20
 #define MAX_RELAX 8                 /* each takes 2 s: more would look like a hang */
@@ -1948,11 +2288,48 @@ static void report_early_end(void)
 		}
 }
 
+static struct { struct seccomp_notif req; int lfd; } parked[4096];
+static int nparked;
+
+/* -T.  The thread whose turn it is sleeps in a lock wait that is not in the
+ * recording: the lock is held by a thread parked at a syscall behind it.  Live,
+ * that thread came back from its syscall and released the lock in time; the end
+ * of its stretch came later, which is why it is ordered later.  Let a parked
+ * thread go first if its recorded call had returned before the waiting thread's
+ * stretch ended (their stretches overlapped, so this order is as true to the log
+ * as the other).  Returns the thread to let go, or NULL. */
+static struct thr *lock_holder_first(void)
+{
+	while (xnext < nents && byexit[xnext]->done)
+		xnext++;
+	if (!opt_serial || state != RUN || xnext >= nents || running_thread(NULL))
+		return NULL;
+	const struct ent *want = byexit[xnext];
+	struct thr *owner = thr_of(want->s->ns_tid), *best = NULL;
+	u64 best_exit = 0;
+
+	if (!owner || !owner->lock_wait)
+		return NULL;
+	/* the wake it is waiting for comes first, whenever it was recorded */
+	for (int j = 0; j < nparked; j++)
+		if (parked[j].req.data.nr == SYS_futex && parked[j].req.data.args[0] == owner->wait_addr &&
+		    !futex_waits(parked[j].req.data.args[1]))
+			return thread_for(ns_tid_of(parked[j].req.pid));
+	for (size_t i = 0; i < nthrs; i++) {
+		struct thr *t = &thrs[i];
+		const struct ent *e = t != owner && t->seen && !t->lock_wait ? next_ent(t) : NULL;
+		if (!e || !e->s->ts_exit || e->s->ts_exit >= want->key)
+			continue;
+		if (!best || e->s->ts_exit < best_exit)
+			best = t, best_exit = e->s->ts_exit;
+	}
+	return best;
+}
+
 static void supervise(void)
 {
-	static struct { struct seccomp_notif req; int lfd; } parked[4096];
 	struct pollfd p[256];
-	int nparked = 0, stalled = 0, open = 0, idle_at_end = 0;
+	int stalled = 0, open = 0, idle_at_end = 0;
 
 	for (int i = 0; i < nprocs; i++)
 		open += procs[i].lfd >= 0;
@@ -1976,6 +2353,8 @@ static void supervise(void)
 		int n = nprocs;
 		for (int i = 0; i < n; i++)
 			p[i] = (struct pollfd){ .fd = procs[i].lfd, .events = POLLIN };
+		if (state == RUN)
+			start_threads(0);
 		int r = poll(p, n, 2000);
 
 		if (interrupted)
@@ -2033,6 +2412,8 @@ static void supervise(void)
 						j++;
 				}
 				relax_order = 0;
+				if (!released)
+					released = start_threads(1);
 				if (released) {
 					n_relaxed++;
 					printf("   order relaxed: let a parked thread go ahead of its turn\n");
@@ -2092,6 +2473,28 @@ static void supervise(void)
 					j++;
 				}
 			}
+			while ((jump_thr = lock_holder_first())) {
+				int went = 0;
+				for (int j = 0; j < nparked && !went; j++) {
+					if (thread_for(ns_tid_of(parked[j].req.pid)) != jump_thr)
+						continue;
+					lfd = parked[j].lfd;
+					if (ioctl(lfd, SECCOMP_IOCTL_NOTIF_ID_VALID, &parked[j].req.id) ||
+					    handle(&parked[j].req)) {
+						parked[j] = parked[--nparked];
+						went = 1;
+					}
+				}
+				if (!went)
+					break;
+				n_jump++;
+				if (opt_verbose)
+					printf("         %-5u went ahead: a thread whose turn it was waits "
+					       "for a lock\n", jump_thr->ns_tid);
+				if (running_thread(NULL))
+					break;
+			}
+			jump_thr = NULL;
 		}
 	}
 }
@@ -2135,10 +2538,7 @@ usage:
 	load(argv[optind], &gen);
 	if (!nents)
 		die("generation %d has no syscalls in %s", gen, argv[optind]);
-	byexit = malloc(nents * sizeof(*byexit));
-	for (size_t i = 0; i < nents; i++)
-		byexit[i] = &ents[i];
-	qsort(byexit, nents, sizeof(*byexit), cmp_exit);
+	order_serial();
 	printf("replaying generation %d: %zu syscalls in %zu thread(s), recorded from %s\n",
 	       gen, remaining, nthrs, fh->comm);
 
@@ -2233,6 +2633,18 @@ usage:
 		if (td)
 			closedir(td);
 	}
+	if (opt_serial)
+		for (int i = 0; i < nprocs; i++) {
+			snprintf(path, sizeof(path), "/proc/%d/task", procs[i].tgid);
+			DIR *td = opendir(path);
+			for (struct dirent *de; td && (de = readdir(td)); ) {
+				struct thr *t = de->d_name[0] != '.' ? thr_of(ns_tid_of(atoi(de->d_name))) : NULL;
+				if (t)
+					hold_thread(t, atoi(de->d_name));
+			}
+			if (td)
+				closedir(td);
+		}
 	printf("seccomp listener attached to %d process(es):", nprocs);
 	for (int i = 0; i < nprocs; i++)
 		printf(" %d", procs[i].tgid);

@@ -9,6 +9,8 @@ side (sysrr_replay, ADDFD, cross-machine restore) is in **REPLAY.md**.
 
 Project dir: `~/src/ebpf-dev/syscall-rr` (it was `~/ebpf-dev/syscall-rr`
 before 2026-11; old notes and the guide may still say that).
+Walkthrough for newcomers (interactive, 2026-11-12): `docs/tour.html`,
+https://claude.ai/artifact/YJn3muzGnxV1wMH1Sd2ycT.
 Study guides: record side https://claude.ai/artifact/6ZebwgVF4vFLJRKdhWRsFA,
 replay side `docs/replay-guide.html`, published at
 https://claude.ai/artifact/BrqbnVeMN3qqisG1nxenKb (publish the same file
@@ -51,6 +53,11 @@ podman 5.4.2 + crun 1.21, criu 4.1.1. User xuanhh, passwordless sudo.
 | `tests/mt_target.c` | 2-thread target for `-S` (strict order) |
 | `tests/fd_target.c` | creates fds after the checkpoint and mmaps one (needs ADDFD; `-N` shows the failure) |
 | `tests/test_nginx.sh`, `tests/nginx/nginx.conf` | nginx master + 2 workers recorded with `-f`, replayed with `-T`, access/error logs compared |
+| `tests/net_target.c`, `file_target.c` | TCP/UDP over loopback with epoll; a file tree with big reads, listings, rename, links |
+| `tests/reexec_target.c`, `sigsync_target.c` | execve of itself every few rounds; signals a program sends itself (raise, SIGPIPE, SIGSEGV, sigqueue, sigwaitinfo) |
+| `tests/pool_target.c` | thread pool (mutex + condition variable); `burst` argument wakes all workers at once |
+| `tests/perl_target.pl`, `py_async_target.py`, `py_threads_target.py`, `py_mp_target.py` | Perl; Python asyncio; Python threads (GIL); multiprocessing |
+| `tests/test_memcached.sh`, `mc_client.pl` | memcached 1.6, 4 worker threads, 4 parallel clients, dataset compared (`MODE=race`: clients share keys) |
 | `tests/test_redis.sh` | redis 7: record, checkpoint, redis-benchmark, restore, replay -S -e live, compare DEBUG DIGEST (REMOTE= supported) |
 | `docs/guide.html` | record-side study guide (published artifact) |
 | `docs/replay-guide.html` | replay-side guide with self-test (published artifact) |
@@ -126,6 +133,11 @@ podman 5.4.2 + crun 1.21, criu 4.1.1. User xuanhh, passwordless sudo.
   Workaround for experiments: `echo acpi_pm > .../clocksource0/current_clocksource`
   (restore `kvm-clock` afterwards). Needed on **both** record and replay
   machines. Tests switch it themselves.
+  **It does not cover `time()` or the `*_COARSE` clocks** (seen 2026-11-12 with
+  Perl's `time`): the vDSO answers those from its data page whatever the
+  clock source, so they are never in the log and the replay gets the real
+  time. glibc's `time()` is that vDSO call; Python's `time.time()` uses
+  clock_gettime and is fine.
 * **vDSO getrandom**: the same gap for random bytes, and no clocksource trick
   helps (REPLAY.md, limitations).
 * Race check answer given to the user: comparing entry vs exit copies does

@@ -55,6 +55,9 @@ If bpftool isn't in `/usr/sbin`, run `make BPFTOOL=$(which bpftool)`.
 ### 1. Record (machine A)
 
 ```
+# make clock reads real syscalls, so they get recorded (see the notes below)
+echo acpi_pm | sudo tee /sys/devices/system/clocksource/clocksource0/current_clocksource
+
 PID=$(sudo podman inspect -f '{{.State.Pid}}' CTR)
 sudo ./sysrr -p $PID -o rec.log        # add -f to follow child processes
 ```
@@ -79,16 +82,21 @@ Check the log:
 
 ### 2. Restore and replay (machine B, or the same machine)
 
-Copy `ckpt.tar.gz` and `rec.log` over first. Then:
+Copy `ckpt.tar.gz` and `rec.log` over first. The checkpoint belongs to root,
+so copy it as root (`sudo cat ckpt.tar.gz | ssh B 'cat > ckpt.tar.gz'`). The
+container's image must exist on B too (`podman pull`, or `podman save | ssh B
+podman load`), and so must any directory the container mounts. Then:
 
 ```
 # once per boot: makes podman load its AppArmor profile
 sudo podman run --rm docker.io/library/debian:trixie-slim true
 
-# use the same clock source on both machines (see the notes below)
+# the same clock source as on machine A
 echo acpi_pm | sudo tee /sys/devices/system/clocksource/clocksource0/current_clocksource
 
 # restore the container stopped, so it can't make any syscall yet
+# (if you already have an /etc/criu/default.conf, save it first and put it back)
+sudo mkdir -p /etc/criu
 echo leave-stopped | sudo tee /etc/criu/default.conf
 sudo podman container restore --import ckpt.tar.gz --name NEW
 sudo rm /etc/criu/default.conf
@@ -106,7 +114,7 @@ Useful options:
 |---|---|
 | `-g N` | which generation to replay (match the checkpoint you restored) |
 | `-S` | keep the recorded order of syscalls across threads |
-| `-T` | run threads one at a time in recorded order (use this when threads share memory) |
+| `-T` | run threads one at a time in recorded order (use this when threads share memory or locks) |
 | `-e stop\|live\|kill` | what to do at the end of the log: stop the process (default), let it go on for real, or kill it |
 | `-w FILE` | save what the process writes to stdout/stderr (those writes are faked during replay) |
 | `-c` | keep going when a syscall's input differs from the recording |
@@ -124,9 +132,16 @@ REMOTE=host SSH="ssh -i KEY" tests/run_all.sh   # restore and replay on another 
 tests/run_crashes.sh            # catalogue of crashing programs
 ```
 
-Some tests pull container images (debian, python, redis, nginx). The pbzip2
-test needs a large input file at `tests/real/pbzip2/big.txt`, which isn't in
-the repo (45 MB). Any large file works.
+Some tests pull container images (debian, python, redis, nginx, memcached).
+
+`REMOTE=` needs passwordless sudo on the other machine; the tests copy
+themselves to the same path there.
+
+`run_crashes.sh` needs more than `make` builds: the C++, Go and Rust crash
+programs in `tests/lang/` and pbzip2 in `tests/real/pbzip2/` must be built by
+hand (g++, go, rustc, libbz2), and pbzip2 needs a large input file at
+`tests/real/pbzip2/big.txt`, which isn't in the repo (45 MB; any large file
+works). Rows whose binary is missing fail.
 
 ## Notes and limits
 
@@ -135,8 +150,13 @@ the repo (45 MB). Any large file works.
 - vDSO calls (`clock_gettime`, glibc's `getrandom`) don't enter the kernel, so
   they aren't recorded. The `acpi_pm` clock source forces clock calls through
   a real syscall on both machines.
-- Signals that arrive from outside (async signals) can't be replayed yet.
-  sysrr reports them instead of hanging.
+- Signals a program sends itself (`raise`, a write to a closed pipe, a bad
+  pointer) are replayed. Signals that arrive from outside or from a timer
+  can't be replayed yet: `sysrr_replay` reports a divergence instead of
+  hanging.
+- Threads that take the same lock within a few hundred nanoseconds of each
+  other can't always be put back in order: the log only has syscalls. `-T`
+  gets most programs through; when it can't, `sysrr_replay` says so.
 - Checkpointing while running fails if the program keeps growing a file in
   the container's own writable layer. Write such files to a volume instead.
 
@@ -145,4 +165,6 @@ More detail:
 - `syscall-rr/DESIGN.md`: how everything works
 - `syscall-rr/RECORD.md`: the recording side
 - `syscall-rr/REPLAY.md`: the replay side, test results and known limits
-- `syscall-rr/docs/`: study guides (HTML)
+- `syscall-rr/docs/`: guides (HTML). `tour.html` is the place to start: it
+  walks through recording and replay one click at a time. `guide.html` and
+  `replay-guide.html` go into detail.

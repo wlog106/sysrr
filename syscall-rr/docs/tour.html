@@ -1,0 +1,542 @@
+<title>sysrr Walkthrough</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans+Condensed:wght@500;600&family=IBM+Plex+Sans:ital,wght@0,400;0,600;1,400&display=swap">
+<style>
+/* Layout: one reading column with a contents rail. Each idea is a short text plus one thing to click through:
+   a stepper over a lane diagram, a picker, or a timeline. Same token family as the two detailed guides:
+   teal = kernel, amber = our tools, blue = the program being recorded. */
+:root {
+  --bg: #f3f5f4; --surface: #ffffff; --ink: #18201f; --muted: #586563; --line: #d3dbd9;
+  --kernel: #0b6f68; --kernel-soft: #e1f0ee; --user: #9a520c; --user-soft: #f7ebdc;
+  --target: #4b5bb0; --target-soft: #e6e9f7;
+  --good: #2d7a33; --good-soft: #e3f1e3; --bad: #b1261d; --bad-soft: #f8e3e1; --code-bg: #e9eeed;
+  --f-display: "IBM Plex Sans Condensed", "Arial Narrow", system-ui, sans-serif;
+  --f-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --f-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: #0e1413; --surface: #151d1c; --ink: #e2eae8; --muted: #94a5a2; --line: #2a3634;
+    --kernel: #5cc4b8; --kernel-soft: #16302d; --user: #e4a65f; --user-soft: #33261a;
+    --target: #97a5f0; --target-soft: #1e2340;
+    --good: #74c37a; --good-soft: #1a2e1c; --bad: #f08479; --bad-soft: #3a1d1a; --code-bg: #1c2625;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0e1413; --surface: #151d1c; --ink: #e2eae8; --muted: #94a5a2; --line: #2a3634;
+  --kernel: #5cc4b8; --kernel-soft: #16302d; --user: #e4a65f; --user-soft: #33261a;
+  --target: #97a5f0; --target-soft: #1e2340;
+  --good: #74c37a; --good-soft: #1a2e1c; --bad: #f08479; --bad-soft: #3a1d1a; --code-bg: #1c2625;
+}
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--ink); font: 17px/1.65 var(--f-body);
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+.wrap { max-width: 1080px; margin: 0 auto; padding-block: 40px 96px; display: grid; grid-template-columns: 180px minmax(0, 1fr); gap: 48px; }
+nav.toc { position: sticky; top: calc(env(safe-area-inset-top, 0px) + 24px); align-self: start; font-size: 14px; display: flex; flex-direction: column; gap: 6px; }
+nav.toc a { color: var(--muted); text-decoration: none; padding: 2px 0 2px 10px; border-left: 2px solid var(--line); }
+nav.toc a:hover, nav.toc a:focus-visible { color: var(--kernel); border-left-color: var(--kernel); }
+main { min-width: 0; }
+@media (max-width: 860px) { .wrap { grid-template-columns: 1fr; gap: 24px; } nav.toc { position: static; flex-direction: row; flex-wrap: wrap; gap: 6px 14px; } nav.toc a { border-left: 0; padding: 0; } }
+header { margin-bottom: 32px; }
+.eyebrow { font: 600 12px var(--f-display); letter-spacing: .1em; text-transform: uppercase; color: var(--kernel); }
+h1 { font: 600 clamp(36px, 6vw, 52px)/1.05 var(--f-display); margin: 6px 0 14px; letter-spacing: -.01em; text-wrap: balance; }
+h2 { font: 600 28px/1.15 var(--f-display); margin: 0 0 10px; text-wrap: balance; }
+h3 { font: 600 19px/1.3 var(--f-display); margin: 26px 0 8px; text-wrap: balance; }
+.lede { font-size: 19px; max-width: 62ch; margin: 0; }
+section { padding-block: 34px; border-top: 1px solid var(--line); }
+p, ul, ol { max-width: 66ch; }
+p { margin: 0 0 14px; }
+li { margin-bottom: 6px; }
+code, .mono { font-family: var(--f-mono); font-size: .88em; }
+:not(pre) > code { background: var(--code-bg); padding: 1px 5px; border-radius: 4px; }
+pre { background: var(--code-bg); padding: 14px 16px; border-radius: 6px; overflow-x: auto; font: 13.5px/1.55 var(--f-mono); max-width: 100%; margin: 0 0 16px; }
+pre .dim { color: var(--muted); }
+a { color: var(--kernel); }
+.key { background: var(--kernel-soft); padding: 14px 18px; border-radius: 6px; max-width: 68ch; margin: 18px 0; }
+.key p:last-child { margin-bottom: 0; }
+.tablewrap { overflow-x: auto; margin: 0 0 18px; }
+table { border-collapse: collapse; font-size: 15px; min-width: 520px; width: 100%; background: var(--surface); }
+th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font: 600 12px var(--f-display); text-transform: uppercase; letter-spacing: .06em; color: var(--muted); background: var(--bg); }
+.pill { display: inline-block; font: 600 11px var(--f-display); letter-spacing: .06em; text-transform: uppercase; padding: 2px 8px; border-radius: 999px; white-space: nowrap; }
+.pill.ok { background: var(--good-soft); color: var(--good); }
+.pill.no { background: var(--bad-soft); color: var(--bad); }
+.pill.run { background: var(--kernel-soft); color: var(--kernel); }
+.pill.fake { background: var(--user-soft); color: var(--user); }
+.pill.mid { background: var(--code-bg); color: var(--muted); }
+
+/* legend */
+.legend { display: flex; flex-wrap: wrap; gap: 8px 18px; font-size: 14px; color: var(--muted); margin: 0 0 14px; }
+.legend span::before { content: ""; display: inline-block; width: 11px; height: 11px; border-radius: 3px; margin-right: 6px; vertical-align: -1px; background: var(--c); }
+
+/* the interactive panel */
+.demo { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 18px; margin: 18px 0 22px; }
+.demo-head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 14px; }
+.demo-head .count { font: 600 13px var(--f-mono); color: var(--muted); margin-left: auto; }
+button { font: 600 14px var(--f-body); color: var(--ink); background: var(--code-bg); border: 1px solid var(--line); border-radius: 6px; padding: 7px 14px; cursor: pointer; }
+button:hover { border-color: var(--kernel); }
+button:focus-visible, .chip:focus-visible { outline: 2px solid var(--kernel); outline-offset: 2px; }
+button.primary { background: var(--kernel); border-color: var(--kernel); color: var(--bg); }
+button:disabled { opacity: .45; cursor: default; border-color: var(--line); }
+button[aria-pressed="true"] { background: var(--kernel-soft); border-color: var(--kernel); color: var(--kernel); }
+.dots { display: flex; gap: 5px; }
+.dots i { width: 9px; height: 9px; border-radius: 50%; background: var(--line); }
+.dots i.on { background: var(--kernel); }
+.caption { min-height: 7.5em; }
+.caption h3 { margin: 0 0 6px; }
+.caption p { margin: 0 0 8px; font-size: 16px; }
+.caption pre { margin: 8px 0 0; }
+
+/* lanes: who does what */
+.lanes { display: grid; gap: 8px; margin-bottom: 16px; }
+.lane { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 10px; align-items: stretch; }
+.lane > .who { font: 600 12px/1.25 var(--f-display); letter-spacing: .06em; text-transform: uppercase; color: var(--c); display: flex; align-items: center; }
+.lane > .boxes { display: flex; flex-wrap: wrap; gap: 8px; min-width: 0; }
+.node { flex: 1 1 130px; min-width: 0; border: 1.5px solid var(--line); border-radius: 6px; padding: 8px 10px; font-size: 14px; line-height: 1.35; background: var(--bg); color: var(--muted); transition: background .2s, border-color .2s, color .2s; }
+.node b { display: block; font: 600 14px var(--f-display); color: inherit; }
+.node small { font: 12.5px var(--f-mono); overflow-wrap: anywhere; }
+.node.on { background: var(--soft); border-color: var(--c); color: var(--ink); }
+.node.on b { color: var(--c); }
+.node.done { color: var(--ink); }
+.t { --c: var(--target); --soft: var(--target-soft); }
+.k { --c: var(--kernel); --soft: var(--kernel-soft); }
+.u { --c: var(--user); --soft: var(--user-soft); }
+.f { --c: var(--muted); --soft: var(--code-bg); }
+@media (max-width: 560px) { .lane { grid-template-columns: 1fr; gap: 4px; } }
+@media (prefers-reduced-motion: reduce) { .node, .seg, .bar { transition: none !important; } }
+
+/* syscall picker */
+.chips { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
+.chip { font: 600 13.5px var(--f-mono); padding: 5px 11px; border-radius: 999px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); cursor: pointer; }
+.chip[aria-pressed="true"] { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+.verdict { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 6px 14px; align-items: baseline; }
+.verdict p { margin: 0; font-size: 16px; }
+
+/* timelines */
+.tl { display: grid; gap: 6px; margin: 6px 0 14px; }
+.tl-row { display: grid; grid-template-columns: 74px minmax(0, 1fr); gap: 10px; align-items: center; }
+.tl-row > span { font: 600 12px var(--f-display); letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+.track { position: relative; height: 34px; background: var(--bg); border: 1px solid var(--line); border-radius: 5px; overflow: hidden; }
+.bar { position: absolute; top: 4px; bottom: 4px; border-radius: 4px; font: 600 11.5px/24px var(--f-mono); text-align: center; white-space: nowrap; overflow: hidden; color: var(--ink); transition: left .5s, width .5s; }
+.bar.sys { background: var(--kernel-soft); border: 1px solid var(--kernel); }
+.bar.code { background: var(--target-soft); border: 1px solid var(--target); }
+.bar.code.clash { background: var(--bad-soft); border-color: var(--bad); }
+.outcome { font-size: 16px; padding: 10px 14px; border-radius: 6px; background: var(--code-bg); }
+.outcome.good { background: var(--good-soft); }
+.outcome.bad { background: var(--bad-soft); }
+.gens { display: flex; height: 44px; border-radius: 6px; overflow: hidden; border: 1px solid var(--line); margin-bottom: 12px; }
+.seg { border: 0; border-radius: 0; padding: 0 6px; font: 600 12.5px var(--f-display); letter-spacing: .04em; color: var(--ink); background: var(--bg); border-right: 1px solid var(--line); min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.seg:last-child { border-right: 0; }
+.seg[aria-pressed="true"] { background: var(--soft); color: var(--c); }
+dl.gloss { display: grid; grid-template-columns: minmax(110px, auto) minmax(0, 1fr); gap: 8px 18px; max-width: 76ch; font-size: 16px; margin: 0; }
+dl.gloss dt { font: 600 15px var(--f-mono); color: var(--kernel); }
+dl.gloss dd { margin: 0; }
+@media (max-width: 560px) { dl.gloss { grid-template-columns: 1fr; gap: 2px; } dl.gloss dd { margin-bottom: 10px; } }
+</style>
+
+<div class="wrap">
+<nav class="toc" aria-label="Contents">
+  <a href="#why">What it's for</a>
+  <a href="#journey">The whole journey</a>
+  <a href="#record">Recording one call</a>
+  <a href="#gens">Where a replay starts</a>
+  <a href="#replay">Replaying one call</a>
+  <a href="#decide">Fake or run</a>
+  <a href="#threads">Several threads</a>
+  <a href="#works">What works today</a>
+  <a href="#use">Using it</a>
+  <a href="#words">Words</a>
+</nav>
+
+<main>
+<header>
+  <div class="eyebrow">sysrr · start here</div>
+  <h1>sysrr Walkthrough</h1>
+  <p class="lede">sysrr lets a copy of a running program live through the same events as the original. This page shows how, one click at a time. No kernel knowledge is assumed.</p>
+</header>
+
+<section id="why">
+  <h2>What it's for</h2>
+  <p>A program in a container fails once a week. By the time you look, the moment is gone. You'd like to go back to a point before the failure and watch it happen again, as often as you need.</p>
+  <p>Two things make that possible:</p>
+  <ul>
+    <li><strong>A checkpoint</strong> is a photo of the program: its memory, its threads, its open files. A tool called CRIU takes it without stopping the program, and can bring a copy back to life from it later.</li>
+    <li><strong>A recording</strong> is a list of everything the program learned from outside after the photo: bytes it read, the time, random numbers, network data.</li>
+  </ul>
+  <div class="key"><p>A program is a machine that turns inputs into state. Start a copy from the photo, give it the same inputs in the same order, and it reaches the same state, including the same crash.</p></div>
+  <p>Every input reaches a program through a <strong>syscall</strong>, a request to the kernel such as <code>read</code> or <code>clock_gettime</code>. So sysrr records syscalls, and replays them.</p>
+  <p class="legend"><span style="--c: var(--target)">the program</span><span style="--c: var(--kernel)">the Linux kernel</span><span style="--c: var(--user)">sysrr's tools</span></p>
+</section>
+
+<section id="journey">
+  <h2>The whole journey</h2>
+  <p>Six steps, on two machines. They can also be the same machine.</p>
+  <div class="demo" data-stepper="journey">
+    <div class="lanes">
+      <div class="lane"><div class="who t">Machine A</div><div class="boxes">
+        <div class="node t" data-n="prog"><b>Program</b><small>in a container</small></div>
+        <div class="node u" data-n="sysrr"><b>sysrr</b><small>the recorder</small></div>
+        <div class="node k" data-n="criu"><b>CRIU</b><small>podman checkpoint</small></div>
+      </div></div>
+      <div class="lane"><div class="who f">Files</div><div class="boxes">
+        <div class="node f" data-n="log"><b>rec.log</b><small>every syscall and its data</small></div>
+        <div class="node f" data-n="ckpt"><b>ckpt.tar.gz</b><small>the photo</small></div>
+      </div></div>
+      <div class="lane"><div class="who t">Machine B</div><div class="boxes">
+        <div class="node t" data-n="copy"><b>Restored copy</b><small>frozen at the photo</small></div>
+        <div class="node u" data-n="replay"><b>sysrr_replay</b><small>answers its syscalls</small></div>
+      </div></div>
+    </div>
+    <div class="demo-head">
+      <button type="button" data-act="prev" id="journey-prev">Back</button>
+      <button type="button" class="primary" data-act="next" id="journey-next">Next</button>
+      <div class="dots"></div>
+      <span class="count"></span>
+    </div>
+    <div class="caption" aria-live="polite"></div>
+  </div>
+</section>
+
+<section id="record">
+  <h2>Recording one call</h2>
+  <p>The recorder never touches the program. It asks the kernel to run two small functions, one each time the program enters a syscall and one each time it leaves. That's what <strong>eBPF</strong> is: small checked functions that run inside the kernel.</p>
+  <p>Follow one <code>read(3, buf, 16)</code>, a request for 16 bytes from file number 3:</p>
+  <div class="demo" data-stepper="record">
+    <div class="lanes">
+      <div class="lane"><div class="who t">Program</div><div class="boxes">
+        <div class="node t" data-n="call"><b>calls read</b><small>read(3, buf, 16)</small></div>
+        <div class="node t" data-n="back"><b>gets its answer</b><small>16 bytes in buf</small></div>
+      </div></div>
+      <div class="lane"><div class="who k">Kernel</div><div class="boxes">
+        <div class="node k" data-n="enter"><b>entry hook</b><small>number, arguments, seq</small></div>
+        <div class="node k" data-n="do"><b>does the read</b><small>fills buf</small></div>
+        <div class="node k" data-n="exit"><b>exit hook</b><small>result, copy of buf</small></div>
+        <div class="node k" data-n="ring"><b>ring buffer</b><small>records wait here</small></div>
+      </div></div>
+      <div class="lane"><div class="who u">sysrr</div><div class="boxes">
+        <div class="node u" data-n="copy"><b>copies to disk</b><small>rec.log</small></div>
+      </div></div>
+    </div>
+    <div class="demo-head">
+      <button type="button" data-act="prev" id="record-prev">Back</button>
+      <button type="button" class="primary" data-act="next" id="record-next">Next</button>
+      <div class="dots"></div>
+      <span class="count"></span>
+    </div>
+    <div class="caption" aria-live="polite"></div>
+  </div>
+  <p>Which bytes get copied depends on the direction. Data the kernel hands to the program (a <code>read</code>) is copied when the call leaves, because that's when it exists. Data the program hands to the kernel (a <code>write</code>, a file name) is copied when the call enters. The first kind is what a replay must give back. The second kind is what a replay uses to check that the copy is still on the same path.</p>
+  <p>The cost: a program that does nothing but tiny syscalls runs about 2.8 times slower while recorded. Ordinary programs lose far less. Other programs on the machine pay about 0.03 microseconds per syscall.</p>
+  <p>More detail: <a href="https://claude.ai/artifact/6ZebwgVF4vFLJRKdhWRsFA">Inside sysrr</a>.</p>
+</section>
+
+<section id="gens">
+  <h2>Where a replay starts</h2>
+  <p>The recorder runs across the checkpoint, so the log holds calls from before and after the photo. A copy restored from the photo must only get the calls made after it. sysrr marks the border by itself, because it can see CRIU at work. Click the parts:</p>
+  <div class="demo" id="gens-demo">
+    <div class="gens">
+      <button type="button" class="seg t" style="flex: 3" data-g="0" aria-pressed="true" id="seg-0">generation 0</button>
+      <button type="button" class="seg k" style="flex: 1.3" data-g="1" aria-pressed="false" id="seg-1">CRIU at work</button>
+      <button type="button" class="seg u" style="flex: 4" data-g="2" aria-pressed="false" id="seg-2">generation 1</button>
+      <button type="button" class="seg f" style="flex: 1.2" data-g="3" aria-pressed="false" id="seg-3">not recorded</button>
+    </div>
+    <div class="caption" aria-live="polite" id="gens-cap"></div>
+  </div>
+  <p>Take a second checkpoint later and generation 2 begins. One log can serve several checkpoints: restore photo N, replay generation N.</p>
+</section>
+
+<section id="replay">
+  <h2>Replaying one call</h2>
+  <p>On machine B the copy wakes up believing nothing happened. Its next syscall would ask machine B's kernel, which knows nothing of the original's files and network. So the kernel must not answer. A kernel feature called <strong>seccomp user notification</strong> does that: it parks each syscall and asks another program what to do. That program is sysrr_replay.</p>
+  <div class="demo" data-stepper="replay">
+    <div class="demo-head" style="margin-bottom: 12px">
+      <button type="button" data-case="ok" aria-pressed="true" id="case-ok">The copy is on track</button>
+      <button type="button" data-case="bad" aria-pressed="false" id="case-bad">The copy has drifted</button>
+    </div>
+    <div class="lanes">
+      <div class="lane"><div class="who t">Copy</div><div class="boxes">
+        <div class="node t" data-n="call"><b>makes a call</b><small data-v="call">read(3, buf, 16)</small></div>
+        <div class="node t" data-n="back"><b>carries on</b><small data-v="back">sees 16 bytes</small></div>
+      </div></div>
+      <div class="lane"><div class="who k">Kernel</div><div class="boxes">
+        <div class="node k" data-n="park"><b>parks the thread</b><small>the call does not run</small></div>
+        <div class="node k" data-n="ask"><b>asks sysrr_replay</b><small>"what happens?"</small></div>
+        <div class="node k" data-n="ret"><b>returns the answer</b><small data-v="ret">read = 16</small></div>
+      </div></div>
+      <div class="lane"><div class="who u">sysrr_replay</div><div class="boxes">
+        <div class="node u" data-n="look"><b>next record</b><small data-v="look">log says: read = 16</small></div>
+        <div class="node u" data-n="check"><b>compares</b><small data-v="check">same call, same input</small></div>
+        <div class="node u" data-n="poke"><b>writes the bytes</b><small data-v="poke">16 recorded bytes into buf</small></div>
+      </div></div>
+    </div>
+    <div class="demo-head">
+      <button type="button" data-act="prev" id="replay-prev">Back</button>
+      <button type="button" class="primary" data-act="next" id="replay-next">Next</button>
+      <div class="dots"></div>
+      <span class="count"></span>
+    </div>
+    <div class="caption" aria-live="polite"></div>
+  </div>
+  <p>The check is the useful part. A copy whose state has gone wrong, even by one byte, sooner or later hands the kernel something the original didn't. Replay stops there, shows both versions, and lists the thread's last calls. That report is the starting point for finding the cause.</p>
+  <p>More detail: <a href="https://claude.ai/artifact/BrqbnVeMN3qqisG1nxenKb">Inside sysrr_replay</a>.</p>
+</section>
+
+<section id="decide">
+  <h2>Fake or run</h2>
+  <p>Not every call can be answered from the log. A call that tells the program something about the outside is <span class="pill fake">faked</span>: the recorded result is returned and nothing really happens. A call that changes the program itself has to <span class="pill run">run for real</span>, or the program would lack the memory or the thread it just asked for. Pick a call:</p>
+  <div class="demo" id="pick">
+    <div class="chips" id="pick-chips"></div>
+    <div class="verdict" id="pick-out" aria-live="polite"></div>
+  </div>
+</section>
+
+<section id="threads">
+  <h2>Several threads</h2>
+  <p>Each thread gets its own answers from the log, so one thread alone always replays exactly. Two threads that share memory add a problem: the result depends on who touched the memory first, and touching memory makes no syscall. Nothing in the log says who was first.</p>
+  <p>Here two threads each read a random number, mix it into a shared total, and print the total. Blue is program code, green is a syscall.</p>
+  <div class="demo" id="order">
+    <div class="demo-head" style="margin-bottom: 12px">
+      <button type="button" data-m="live" aria-pressed="true" id="m-live">Live run</button>
+      <button type="button" data-m="free" aria-pressed="false" id="m-free">Replay, no order</button>
+      <button type="button" data-m="serial" aria-pressed="false" id="m-serial">Replay with -T</button>
+    </div>
+    <div class="tl">
+      <div class="tl-row"><span>Thread 1</span><div class="track" id="tr1"></div></div>
+      <div class="tl-row"><span>Thread 2</span><div class="track" id="tr2"></div></div>
+    </div>
+    <div class="outcome" id="order-out" aria-live="polite"></div>
+  </div>
+  <p>With <code>-T</code>, replay lets only one thread run program code at a time. It decides the order from what the log does have: the exact order in which threads entered their syscalls, and the calls threads make around locks. That is a well-founded guess, not a fact from the log.</p>
+  <p>How good is the guess? If two threads take the same lock more than a microsecond apart, it's right. If they do it within a few hundred nanoseconds, the log can show them the wrong way round. Replay then stops at the first value that came out differently and says so. It doesn't pretend.</p>
+</section>
+
+<section id="works">
+  <h2>What works today</h2>
+  <p>The test suite runs 25 programs through the whole journey and compares each copy with its original. Measured on 2026-11-12, on one machine.</p>
+  <div class="tablewrap"><table>
+    <thead><tr><th>Kind of program</th><th>Result</th><th>Examples in the suite</th></tr></thead>
+    <tbody>
+      <tr><td>One thread: files, network, child processes, its own signals</td><td><span class="pill ok">replays</span></td><td>A TCP echo loop, a file tree, a program that re-executes itself, Perl, Python with SQLite, Python asyncio</td></tr>
+      <tr><td>Real servers</td><td><span class="pill ok">replays</span></td><td>Redis, nginx with two workers, memcached with four threads and four clients. Each copy ends with the same data as the original.</td></tr>
+      <tr><td>Threads that share memory, a few microseconds apart</td><td><span class="pill ok">replays with -T</span></td><td>Two threads on a shared total</td></tr>
+      <tr><td>A thread pool where workers take one lock at almost the same moment</td><td><span class="pill mid">often</span></td><td>A pool of four workers: 5 of 8 runs replayed to the last line. Before 2026-11-12 it was 0 of 6.</td></tr>
+      <tr><td>Clients racing for the same key on a threaded server</td><td><span class="pill mid">sometimes</span></td><td>memcached with shared keys: 1 of 3 runs with two clients, none with four</td></tr>
+      <tr><td>Python threads</td><td><span class="pill no">reported</span></td><td>The interpreter's lock changes hands on a timer. Replay follows for a few dozen calls, then reports that it lost track.</td></tr>
+      <tr><td>Signals from a timer or from another program</td><td><span class="pill no">reported</span></td><td>When they arrive isn't in the log.</td></tr>
+      <tr><td>Time and random numbers that never enter the kernel</td><td><span class="pill no">not seen</span></td><td><code>time()</code>, and glibc's <code>getrandom()</code> on new systems. Reading the clock with <code>clock_gettime</code> works after one setting (below).</td></tr>
+    </tbody>
+  </table></div>
+  <p>“Reported” means the replay ends by itself with a message that names the problem. A replay that hangs, or claims success when the copy differs, counts as a bug in sysrr.</p>
+</section>
+
+<section id="use">
+  <h2>Using it</h2>
+  <p>Build once with <code>make</code> in <code>syscall-rr/</code>. You need root on both machines. The code is at <a href="https://github.com/wlog106/sysrr">github.com/wlog106/sysrr</a>.</p>
+  <pre><span class="dim"># machine A: make clock reads visible, then record</span>
+echo acpi_pm | sudo tee /sys/devices/system/clocksource/clocksource0/current_clocksource
+PID=$(sudo podman inspect -f '{{.State.Pid}}' CTR)
+sudo ./sysrr -p $PID -o rec.log            <span class="dim"># add -f if the program starts child processes</span>
+
+<span class="dim"># machine A, another terminal: take the photo, the program keeps running</span>
+sudo podman container checkpoint --leave-running -e ckpt.tar.gz CTR
+
+<span class="dim"># ... wait for the failure, then Ctrl-C in the sysrr terminal ...</span>
+./sysrr_dump -s rec.log                    <span class="dim"># is the log complete?</span>
+
+<span class="dim"># machine B: bring the copy back, frozen</span>
+echo acpi_pm | sudo tee /sys/devices/system/clocksource/clocksource0/current_clocksource
+sudo mkdir -p /etc/criu
+echo leave-stopped | sudo tee /etc/criu/default.conf
+sudo podman container restore --import ckpt.tar.gz --name NEW
+sudo rm /etc/criu/default.conf
+
+<span class="dim"># machine B: replay generation 1</span>
+sudo ./sysrr_replay -p $(sudo podman inspect -f '{{.State.Pid}}' NEW) -g 1 -T rec.log</pre>
+  <div class="tablewrap"><table>
+    <thead><tr><th>Option</th><th>When to use it</th></tr></thead>
+    <tbody>
+      <tr><td><code>-T</code></td><td>The program has threads or several processes. Safe to use always.</td></tr>
+      <tr><td><code>-e stop</code> / <code>live</code> / <code>kill</code></td><td>What happens at the end of the log: freeze the copy so you can inspect it (default), let it carry on for real, or end it.</td></tr>
+      <tr><td><code>-w FILE</code></td><td>Save what the copy prints. Its writes are faked, so they don't reach a terminal.</td></tr>
+      <tr><td><code>-v</code></td><td>Print every call as it's answered.</td></tr>
+    </tbody>
+  </table></div>
+  <p>To try everything without a program of your own: <code>tests/run_all.sh</code> runs the suite, and <code>tests/run_all.sh basic</code> runs the smallest test.</p>
+</section>
+
+<section id="words">
+  <h2>Words</h2>
+  <dl class="gloss">
+    <dt>syscall</dt><dd>A request from a program to the kernel: read a file, send data, ask the time.</dd>
+    <dt>eBPF</dt><dd>Small functions the kernel runs for you at chosen moments, after checking that they're safe. The recorder is made of them.</dd>
+    <dt>CRIU</dt><dd>The tool that saves a running program to disk and restores it. <code>podman container checkpoint</code> uses it.</dd>
+    <dt>generation</dt><dd>The part of the log that belongs to one checkpoint. Generation 1 is everything after the first checkpoint.</dd>
+    <dt>seccomp</dt><dd>A kernel filter that sees every syscall of a process before it runs. Here it hands each one to sysrr_replay.</dd>
+    <dt>ptrace</dt><dd>The debugger interface. Replay uses it for a few milliseconds to install the filter in the frozen copy, and for a few special cases.</dd>
+    <dt>vDSO</dt><dd>Kernel code that runs inside the program to answer a few calls, such as the time, without a real syscall. Calls answered there can't be recorded.</dd>
+    <dt>futex</dt><dd>The syscall behind locks. A thread calls it only when it has to wait for a lock or wake a waiter, which is why the log shows only part of what locks did.</dd>
+    <dt>divergence</dt><dd>The moment the copy does something the original didn't. Replay stops and reports it.</dd>
+  </dl>
+</section>
+</main>
+</div>
+
+<script>
+(function () {
+  var C = function (s) { return '<code>' + s + '</code>'; };
+
+  /* ---- steppers: a list of steps, each lights up some boxes ---- */
+  var STEPS = {
+    journey: [
+      { on: ['prog'], h: 'A program runs in a container', p: 'It is whatever you want to study: a server, a script, a test.' },
+      { on: ['prog', 'sysrr', 'log'], h: 'Start the recorder', p: 'sysrr attaches to the program from outside. From now on every syscall the program makes, with the data that came back, is added to rec.log.', c: 'sudo ./sysrr -p PID -o rec.log' },
+      { on: ['prog', 'criu', 'ckpt', 'sysrr'], h: 'Take the photo', p: 'CRIU freezes the program for about 0.2 seconds, saves its memory and threads, and lets it go on. sysrr notices CRIU and notes in the log: generation 1 starts here.', c: 'sudo podman container checkpoint --leave-running -e ckpt.tar.gz CTR' },
+      { on: ['prog', 'sysrr', 'log'], h: 'Keep recording until it goes wrong', p: 'Minutes or hours later the program fails. Stop the recorder. The log now holds everything the program was told between the photo and the failure.' },
+      { on: ['ckpt', 'copy'], h: 'Restore a copy, frozen', p: 'On machine B, CRIU rebuilds the program from the photo: the same memory, the same threads, even the same process numbers. It is left stopped, so it cannot make a single syscall yet.', c: 'sudo podman container restore --import ckpt.tar.gz --name NEW' },
+      { on: ['log', 'copy', 'replay'], h: 'Replay', p: 'sysrr_replay takes over the copy\'s syscalls and lets it run. Each call is answered from the log. The copy computes what the original computed, and fails where the original failed. You can do this as many times as you like.', c: 'sudo ./sysrr_replay -p PID2 -g 1 -T rec.log' }
+    ],
+    record: [
+      { on: ['call'], h: 'The program asks for 16 bytes', p: 'It puts the request in CPU registers and enters the kernel. It has no idea anyone is watching.' },
+      { on: ['enter'], h: 'The entry hook runs', p: 'An eBPF function notes which call this is and its arguments, and takes the next number from a global counter, ' + C('seq') + '. Those numbers later give the exact order of calls across all threads.' },
+      { on: ['do'], h: 'The kernel does the real work', p: 'It reads the file and puts 16 bytes into the program\'s buffer. Recording changes nothing here.' },
+      { on: ['exit'], h: 'The exit hook runs', p: 'A second eBPF function sees the result, 16, and copies those 16 bytes out of the program\'s memory. These bytes are what a replay will need.' },
+      { on: ['ring'], h: 'The records go into a ring buffer', p: 'A data record with the bytes, then a syscall record that says the call is complete. The ring buffer is memory shared between the kernel and sysrr, so the program doesn\'t wait for a disk.' },
+      { on: ['copy', 'back'], h: 'sysrr writes them to rec.log', p: 'The user-space half of the recorder only moves bytes from the ring buffer to the file. Meanwhile the program already has its answer and carries on.' }
+    ],
+    replay: [
+      { on: ['call'], h: 'The copy makes its next call', p: { ok: 'The same call the original made at this point: ' + C('read(3, buf, 16)') + '.', bad: 'The original printed ' + C('"total 41"') + ' here. This copy got a wrong value earlier, so it wants to print ' + C('"total 40"') + '.' } },
+      { on: ['park'], h: 'The kernel parks the thread', p: 'The seccomp filter matches every syscall. The call does not run. The thread sleeps inside the kernel.' },
+      { on: ['ask'], h: 'The kernel asks sysrr_replay', p: 'It sends a notification: which thread, which call, which arguments.' },
+      { on: ['look'], h: 'sysrr_replay takes that thread\'s next record', p: { ok: 'The log says this thread\'s next call was ' + C('read(3, buf, 16) = 16') + ', and has the 16 bytes.', bad: 'The log says this thread\'s next call was ' + C('write(1, "total 41\\n", 9) = 9') + '.' } },
+      { on: ['check'], h: 'It compares the call with the record', p: { ok: 'Same call, same arguments. A ' + C('read') + ' hands nothing to the kernel, so there is no data to compare.', bad: 'Same call, but it reads the text out of the copy\'s memory and finds ' + C('"total 40"') + ' where the log has ' + C('"total 41"') + '. One byte differs.' } },
+      { on: ['poke'], h: { ok: 'It writes the recorded bytes into the copy\'s memory', bad: 'It stops: divergence' }, p: { ok: 'Straight into ' + C('buf') + ', where the kernel would have put them.', bad: 'The copy is no longer living the original\'s life. sysrr_replay prints both versions and the thread\'s last calls, and freezes the copy so you can look at it.' }, bad: true },
+      { on: ['ret', 'back'], h: { ok: 'The kernel returns 16 to the copy', bad: 'What you do next' }, p: { ok: 'The thread wakes up. For the copy, a read just returned 16 bytes. It cannot tell this from the real thing.', bad: 'Look a few calls back in the report: a value the copy was given, or an order of threads, differed before this point. This is how the tampered-log test catches one flipped byte, three lines later.' }, bad: true }
+    ]
+  };
+  var BAD_TEXT = { call: 'write(1, "total 40\\n", 9)', look: 'log says: write "total 41"', check: 'text differs', poke: 'nothing written', ret: 'no answer', back: 'frozen for inspection' };
+
+  function pick(v, mode) { return typeof v === 'string' ? v : v[mode]; }
+
+  document.querySelectorAll('[data-stepper]').forEach(function (root) {
+    var name = root.getAttribute('data-stepper'), steps = STEPS[name], i = 0, mode = 'ok';
+    var cap = root.querySelector('.caption'), dots = root.querySelector('.dots'), count = root.querySelector('.count');
+    var prev = root.querySelector('[data-act="prev"]'), next = root.querySelector('[data-act="next"]');
+    var orig = {};
+    root.querySelectorAll('[data-v]').forEach(function (el) { orig[el.getAttribute('data-v')] = el.textContent; });
+    steps.forEach(function () { dots.appendChild(document.createElement('i')); });
+
+    function draw() {
+      var s = steps[i], seen = {};
+      for (var k = 0; k < i; k++) steps[k].on.forEach(function (n) { seen[n] = 1; });
+      root.querySelectorAll('.node').forEach(function (el) {
+        var n = el.getAttribute('data-n');
+        el.classList.toggle('on', s.on.indexOf(n) >= 0);
+        el.classList.toggle('done', !!seen[n] && s.on.indexOf(n) < 0);
+      });
+      root.querySelectorAll('[data-v]').forEach(function (el) {
+        var key = el.getAttribute('data-v');
+        el.textContent = mode === 'bad' ? BAD_TEXT[key] : orig[key];
+      });
+      dots.querySelectorAll('i').forEach(function (d, k) { d.classList.toggle('on', k <= i); });
+      count.textContent = (i + 1) + ' / ' + steps.length;
+      cap.innerHTML = '<h3>' + pick(s.h, mode) + '</h3><p>' + pick(s.p, mode) + '</p>' + (s.c ? '<pre>' + s.c + '</pre>' : '');
+      prev.disabled = i === 0;
+      next.textContent = i === steps.length - 1 ? 'Start over' : 'Next';
+    }
+    prev.addEventListener('click', function () { if (i > 0) { i--; draw(); } });
+    next.addEventListener('click', function () { i = i === steps.length - 1 ? 0 : i + 1; draw(); });
+    root.querySelectorAll('[data-case]').forEach(function (b) {
+      b.addEventListener('click', function () {
+        mode = b.getAttribute('data-case');
+        root.querySelectorAll('[data-case]').forEach(function (o) { o.setAttribute('aria-pressed', String(o === b)); });
+        i = 0; draw();
+      });
+    });
+    draw();
+  });
+
+  /* ---- generations ---- */
+  var GENS = [
+    ['Generation 0: before the photo', 'Everything from the moment sysrr attached. A copy restored from the photo already contains the effects of these calls, so a replay skips them. They are still useful to read with ' + C('sysrr_dump') + '.'],
+    ['CRIU at work: about 0.2 seconds', 'To save the program, CRIU takes control of each thread and makes it run about 350 syscalls of CRIU\'s own. The recorder sees CRIU take control (a ' + C('ptrace') + ' call aimed at the program), marks these calls, and a replay never uses them. When CRIU lets go of the last thread, the generation number goes up.'],
+    ['Generation 1: after the photo', 'What a copy restored from this photo has not lived yet. ' + C('sysrr_replay -g 1') + ' feeds it exactly these calls, thread by thread.'],
+    ['After you stop the recorder', 'Nothing more is in the log. When a replay has used every record, it has brought the copy to the state the original had at this moment. With ' + C('-e live') + ' the copy then goes on for real.']
+  ];
+  var gcap = document.getElementById('gens-cap');
+  function showGen(g) {
+    document.querySelectorAll('#gens-demo .seg').forEach(function (b) { b.setAttribute('aria-pressed', String(b.getAttribute('data-g') === String(g))); });
+    gcap.innerHTML = '<h3>' + GENS[g][0] + '</h3><p>' + GENS[g][1] + '</p>';
+  }
+  document.querySelectorAll('#gens-demo .seg').forEach(function (b) { b.addEventListener('click', function () { showGen(+b.getAttribute('data-g')); }); });
+  showGen(0);
+
+  /* ---- fake or run ---- */
+  var CALLS = [
+    ['read', 'fake', 'The bytes come from the log. The file or socket behind it may not even exist on this machine.'],
+    ['write', 'fake', 'Nothing is written anywhere. First the text is compared with what the original wrote: this is the check that catches a copy gone wrong. A write to a closed pipe also gets its SIGPIPE.'],
+    ['clock_gettime', 'fake', 'The copy is told the time the original was told. Otherwise every timestamp and every timeout would differ.'],
+    ['open', 'fake', 'The recorded file number is returned. Replay also places a real file at that number, because a later call that runs for real (' + C('mmap') + ', ' + C('close') + ') needs one to exist.'],
+    ['accept', 'fake', 'No client connects during a replay. The copy is told a client did, and gets a socket that leads nowhere. What that client "sent" comes from the log.'],
+    ['mmap', 'run', 'The program asked for memory and will use it. Replay also makes sure the memory lands at the recorded address, because allocators behave differently otherwise.'],
+    ['clone', 'run', 'A new thread or process must really exist. Replay arranges for it to get the same id as in the recording, since the program has seen that id.'],
+    ['futex', 'run', 'Locks work on the program\'s own memory, so waking a waiter is real. With ' + C('-T') + ', a recorded wait is the exception: it is answered from the log at the right moment, so that threads take locks in the recorded order.'],
+    ['kill', 'run', 'A signal the program sends, to itself or to its children, has to arrive. The targets are real processes in the copy.'],
+    ['close', 'run', 'The file numbers in the copy must stay the same as in the recording, so closing is real.'],
+    ['nanosleep', 'fake', 'A replay doesn\'t wait. It returns at once, which is one reason a replay is usually faster than the original run.'],
+    ['exit', 'run', 'The copy ends the way the original did, with the same exit code or the same crash.']
+  ];
+  var chips = document.getElementById('pick-chips'), out = document.getElementById('pick-out');
+  function showCall(k) {
+    chips.querySelectorAll('.chip').forEach(function (c, j) { c.setAttribute('aria-pressed', String(j === k)); });
+    var c = CALLS[k];
+    out.innerHTML = '<span class="pill ' + c[1] + '">' + (c[1] === 'fake' ? 'faked' : 'runs for real') + '</span><p>' + c[2] + '</p>';
+  }
+  CALLS.forEach(function (c, k) {
+    var b = document.createElement('button');
+    b.type = 'button'; b.className = 'chip'; b.id = 'chip-' + c[0]; b.textContent = c[0];
+    b.addEventListener('click', function () { showCall(k); });
+    chips.appendChild(b);
+  });
+  showCall(0);
+
+  /* ---- two threads: bars are [left %, width %, kind, label] ---- */
+  var MODES = {
+    live: {
+      t1: [[2, 12, 'sys', 'read'], [14, 20, 'code', 'total += a'], [34, 12, 'sys', 'write'], [46, 14, 'code', ''], [60, 12, 'sys', 'sleep']],
+      t2: [[20, 12, 'sys', 'read'], [42, 20, 'code', 'total += b'], [62, 12, 'sys', 'write'], [74, 12, 'code', ''], [86, 12, 'sys', 'sleep']],
+      cls: '', text: '<strong>Live.</strong> Thread 1 updates the total first, then thread 2. They print 41 and then 58. The threads overlap in time, and nothing forces this order: it just happened.'
+    },
+    free: {
+      t1: [[30, 12, 'sys', 'read'], [42, 20, 'code clash', 'total += a'], [62, 12, 'sys', 'write'], [74, 14, 'code', '']],
+      t2: [[2, 12, 'sys', 'read'], [14, 20, 'code clash', 'total += b'], [34, 12, 'sys', 'write'], [46, 12, 'code', '']],
+      cls: 'bad', text: '<strong>Replay without order.</strong> Each thread gets its own recorded bytes, but this time thread 2 happened to run first. It wants to print 34 where the log says 58. Replay reports a divergence at that write.'
+    },
+    serial: {
+      t1: [[2, 12, 'sys', 'read'], [14, 20, 'code', 'total += a'], [34, 12, 'sys', 'write'], [70, 14, 'code', '']],
+      t2: [[2, 12, 'sys', 'read'], [36, 20, 'code', 'total += b'], [56, 12, 'sys', 'write'], [84, 12, 'code', '']],
+      cls: 'good', text: '<strong>Replay with -T.</strong> Thread 2 has its answer ready but is held until thread 1 reaches its next syscall. The blue stretches never overlap and come in the recorded order: 41, then 58, as in the live run.'
+    }
+  };
+  function bars(el, list) {
+    el.innerHTML = '';
+    list.forEach(function (b) {
+      var d = document.createElement('div');
+      d.className = 'bar ' + b[2]; d.style.left = b[0] + '%'; d.style.width = b[1] + '%'; d.textContent = b[3];
+      el.appendChild(d);
+    });
+  }
+  function showMode(m) {
+    document.querySelectorAll('#order [data-m]').forEach(function (b) { b.setAttribute('aria-pressed', String(b.getAttribute('data-m') === m)); });
+    bars(document.getElementById('tr1'), MODES[m].t1);
+    bars(document.getElementById('tr2'), MODES[m].t2);
+    var o = document.getElementById('order-out');
+    o.className = 'outcome ' + MODES[m].cls; o.innerHTML = MODES[m].text;
+  }
+  document.querySelectorAll('#order [data-m]').forEach(function (b) { b.addEventListener('click', function () { showMode(b.getAttribute('data-m')); }); });
+  showMode('live');
+})();
+</script>

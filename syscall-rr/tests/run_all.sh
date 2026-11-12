@@ -31,7 +31,18 @@ TESTS=(
 "vdso-random|glibc getrandom makes no syscall: must end honestly |TARGET=rand_target EXPECT=honest test_replay.sh"
 "shell      |dash: depends on SIGCHLD timing, must never hang  |TARGET=sh_target.sh SYSRR_OPTS=-f REPLAY_OPTS=-T EXPECT=honest test_replay.sh"
 "python     |subprocess, C extensions loaded late, SQLite      |TARGET=py_target.py IMG=$PY SYSRR_OPTS=-f REPLAY_OPTS=-T test_replay.sh"
+"net        |TCP and UDP over loopback, epoll, new connections |TARGET=net_target test_replay.sh"
+"files      |a file tree made and removed, big reads, listings |TARGET=file_target test_replay.sh"
+"reexec     |the program replaces itself with execve           |TARGET=reexec_target test_replay.sh"
+"self-signal|signals it sends itself: raise, SIGPIPE, SIGSEGV  |TARGET=sigsync_target test_replay.sh"
+"pool       |thread pool, jobs one by one: mutex and condvar   |TARGET=pool_target REPLAY_OPTS=-T EXPECT=honest test_replay.sh"
+"pool-burst |thread pool, four workers woken at once           |TARGET=pool_target ARGS=burst REPLAY_OPTS=-T EXPECT=honest test_replay.sh"
+"perl       |Perl: fork, pipe, files, a socket to itself       |TARGET=perl_target.pl SYSRR_OPTS=-f REPLAY_OPTS=-T test_replay.sh"
+"asyncio    |Python asyncio: one epoll loop, many connections  |TARGET=py_async_target.py IMG=$PY SYSRR_OPTS=-f REPLAY_OPTS=-T test_replay.sh"
+"py-threads |Python threads and the GIL                        |TARGET=py_threads_target.py IMG=$PY REPLAY_OPTS=-T EXPECT=honest test_replay.sh"
+"py-procs   |Python multiprocessing: locks between processes   |TARGET=py_mp_target.py IMG=$PY SYSRR_OPTS=-f REPLAY_OPTS=-T EXPECT=honest test_replay.sh"
 "redis      |real server: dataset digest identical             |test_redis.sh"
+"memcached  |real server, 4 worker threads: dataset identical  |test_memcached.sh"
 "nginx      |real server, 3 processes: logs identical          |test_nginx.sh"
 )
 

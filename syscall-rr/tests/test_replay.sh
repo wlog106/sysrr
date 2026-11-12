@@ -91,7 +91,11 @@ sudo podman rm -f -t 0 $SRC >/dev/null 2>&1 || true
 R "sudo podman rm -f -t 0 $DST $BAD >/dev/null 2>&1; true"
 
 echo "--- record (on $(hostname))"
-sudo podman run -d --name $SRC -v "$DIR":/t:ro $IMG /t/$TARGET $ARGS >/dev/null
+# /scratch: a tmpfs for targets that make files.  CRIU saves it during the dump,
+# while the target is frozen; /dev/shm and the container's own layer are archived
+# by podman afterwards, with the target running again, and files that change
+# meanwhile break the checkpoint.
+sudo podman run -d --name $SRC --tmpfs /scratch -v "$DIR":/t:ro $IMG /t/$TARGET $ARGS >/dev/null
 PID=$(sudo podman inspect -f '{{.State.Pid}}' $SRC)
 sudo ../sysrr $SYSRR_OPTS -p "$PID" -o "$OUT/rec.log" 2>"$OUT/sysrr.err" &
 sleep 2
