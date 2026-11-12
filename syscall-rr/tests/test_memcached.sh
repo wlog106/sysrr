@@ -80,7 +80,12 @@ sudo ../sysrr -p "$PID" -o "$OUT/rec.log" 2>"$OUT/sysrr.err" &
 sleep 1
 mc $SRC load 100
 sleep 0.5
-sudo podman container checkpoint --leave-running -e "$OUT/ckpt.tar.gz" $SRC >/dev/null
+sudo podman container checkpoint --leave-running -e "$OUT/ckpt.tar.gz" $SRC >/dev/null || {
+	# the reason is in dump.log, which goes away with the container: show it now
+	echo "FAIL: checkpoint failed; CRIU says:"
+	sudo grep -E "Error|Warn" "$(sudo podman inspect -f "{{.StaticDir}}" $SRC)/dump.log" | tail -8
+	exit 1
+}
 echo "--- checkpoint taken; $CLIENTS clients x $OPS operations after it (generation 1)"
 mc $SRC "$MODE" "$CLIENTS" "$OPS"
 mc $SRC dump >"$OUT/dump_a.txt"

@@ -75,7 +75,12 @@ sleep 1
 grep follow "$OUT/sysrr.err" || true
 sudo podman exec $SRC sh -c 'for i in 1 2 3 4 5; do curl -s -o /dev/null localhost/id; done'
 sleep 0.5
-sudo podman container checkpoint --leave-running -e "$OUT/ckpt.tar.gz" $SRC >/dev/null
+sudo podman container checkpoint --leave-running -e "$OUT/ckpt.tar.gz" $SRC >/dev/null || {
+	# the reason is in dump.log, which goes away with the container: show it now
+	echo "FAIL: checkpoint failed; CRIU says:"
+	sudo grep -E "Error|Warn" "$(sudo podman inspect -f "{{.StaticDir}}" $SRC)/dump.log" | tail -8
+	exit 1
+}
 echo "--- checkpoint taken; $N parallel keep-alive requests + 20 single ones (gen 1)"
 sudo podman exec $SRC sh -c '
 	args=""

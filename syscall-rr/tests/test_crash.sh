@@ -62,6 +62,7 @@ PID=$(sudo podman inspect -f '{{.State.Pid}}' $SRC)
 sudo ../sysrr $FOLLOW -p "$PID" -o "$OUT/rec.log" 2>"$OUT/sysrr.err" &
 sleep ${CKPT_AT:-2}
 if ! sudo podman container checkpoint --leave-running -e "$OUT/ckpt.tar.gz" $SRC >"$OUT/ckpt.txt" 2>&1; then
+	sudo grep -E "Error|Warn" "$(sudo podman inspect -f '{{.StaticDir}}' $SRC)/dump.log" 2>/dev/null | tail -8
 	echo "VERDICT setup: checkpoint failed: $(head -c 150 "$OUT/ckpt.txt")"
 	exit 1
 fi

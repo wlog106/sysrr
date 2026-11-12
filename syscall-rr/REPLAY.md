@@ -497,9 +497,18 @@ Last full suite: 14 of 14, 2 rounds, both machines (2026-11-06). See the guide's
   vfork); timing-only calls past a thread's last record run for real; after 2 s of
   silence under -S/-T one parked thread is released, MAX_RELAX 8 times, reported; sleeps are
   timing-only (poll loops); "quiet" means no record used for 2 s, not only no notification.
-* `CRIU checkpointing failed -52`: with TCP, an open connection at the checkpoint
-  (see "Test suite", 2026-11-12: `--tcp-established`). On the python test (no TCP),
-  about 1 in 10, cause still unknown: read dump.log before the container goes.
+* `CRIU checkpointing failed -52` is CRIU's code for *any* failed dump; the reason
+  is only in dump.log. Causes confirmed so far: an open TCP connection at the
+  checkpoint (`--tcp-established`), and files changing in /dev/shm or the
+  container layer while podman archives them. On the python test (no TCP) the
+  2026-11-06 note said about 1 in 10; on 2026-11-12 it **did not reproduce**:
+  0 failures in 205 looped checkpoints of py_target.py (60 plain, 70 with
+  `sysrr -f` attached, 75 also with acpi_pm) and 14 of 14 full test rounds. At
+  1 in 10 that cannot be chance, so whatever caused it then is gone or needed
+  conditions not present now (a guess: both machines were running suites at the
+  time; never verified). All test scripts now print dump.log's Error lines when a
+  checkpoint fails (test_replay.sh also keeps `$OUT/dump.log`), so the next one
+  will name its cause.
 * Harness trap: anything left running on the remote must have no open stdout/stderr, or
   ssh never returns. Watch long runs with a Monitor: a hang here cost 90 minutes.
 

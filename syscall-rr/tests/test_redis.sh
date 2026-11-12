@@ -78,7 +78,12 @@ sleep 1
 sudo podman exec $SRC sh -c 'for i in $(seq 200); do echo "SET pre:$i v$i"; done | redis-cli >/dev/null'
 sudo podman exec $SRC $CLI set phase before-checkpoint >/dev/null
 sleep 0.5
-sudo podman container checkpoint --leave-running -e "$OUT/ckpt.tar.gz" $SRC >/dev/null
+sudo podman container checkpoint --leave-running -e "$OUT/ckpt.tar.gz" $SRC >/dev/null || {
+	# the reason is in dump.log, which goes away with the container: show it now
+	echo "FAIL: checkpoint failed; CRIU says:"
+	sudo grep -E "Error|Warn" "$(sudo podman inspect -f "{{.StaticDir}}" $SRC)/dump.log" | tail -8
+	exit 1
+}
 echo "--- checkpoint taken; workload after it (generation 1)"
 sudo podman exec $SRC redis-benchmark -q -n $N -r 1000 -c 20 -t set,incr,lpush,get 2>&1 \
 	| tr '\r' '\n' | grep -E 'requests per second' || true

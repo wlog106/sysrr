@@ -111,7 +111,16 @@ sudo podman run -d --name $SRC --tmpfs /scratch -v "$DIR":/t:ro $IMG /t/$TARGET 
 PID=$(sudo podman inspect -f '{{.State.Pid}}' $SRC)
 sudo ../sysrr $SYSRR_OPTS -p "$PID" -o "$OUT/rec.log" 2>"$OUT/sysrr.err" &
 sleep 2
-sudo podman container checkpoint --leave-running $CKPT_OPTS -e "$OUT/ckpt.tar.gz" $SRC >/dev/null
+if ! sudo podman container checkpoint --leave-running $CKPT_OPTS -e "$OUT/ckpt.tar.gz" $SRC >/dev/null; then
+	# "CRIU checkpointing failed -52" covers every cause: the reason is in dump.log,
+	# which goes away with the container, so show it now
+	D=$(sudo podman inspect -f '{{.StaticDir}}' $SRC 2>/dev/null)
+	echo "FAIL: checkpoint failed; CRIU says:"
+	sudo grep -E 'Error|Warn' "$D/dump.log" 2>/dev/null | tail -8
+	sudo cp "$D/dump.log" "$OUT/dump.log" 2>/dev/null && sudo chmod a+r "$OUT/dump.log"
+	sudo pkill -INT -x sysrr || true
+	exit 1
+fi
 if [ -n "$KICK" ]; then         # signals from outside, while generation 1 is recorded
 	for i in 1 2 3 4; do
 		for sig in ${KICK//+/ }; do sudo podman kill -s "$sig" $SRC >/dev/null 2>&1 || true; done
