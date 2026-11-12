@@ -497,12 +497,28 @@ Last full suite: 14 of 14, 2 rounds, both machines (2026-11-06). See the guide's
   vfork); timing-only calls past a thread's last record run for real; after 2 s of
   silence under -S/-T one parked thread is released, MAX_RELAX 8 times, reported; sleeps are
   timing-only (poll loops); "quiet" means no record used for 2 s, not only no notification.
-* Unconfirmed: `CRIU checkpointing failed -52` on the python test, about 1 in 10. Podman
-  removes the container with its dump.log, so the cause is unknown.
+* `CRIU checkpointing failed -52`: with TCP, an open connection at the checkpoint
+  (see "Test suite", 2026-11-12: `--tcp-established`). On the python test (no TCP),
+  about 1 in 10, cause still unknown: read dump.log before the container goes.
 * Harness trap: anything left running on the remote must have no open stdout/stderr, or
   ssh never returns. Watch long runs with a Monitor: a hang here cost 90 minutes.
 
 ## Test suite (2026-11-06): tests/run_all.sh
+
+2026-11-12, across machines (record on claude-dev, restore + replay on
+claude-test, reachable again): suite 25 of 26 in one round; then `signal`,
+`signal-out`, `self-signal`, `asyncio`, `memcached`, `net`, `perl`, `basic` 3 of 3
+each. Crash catalogue across machines: same picture as on one machine (differs:
+race-memory, pbzip2, go-panic; redis same-fault then divergence).
+The one suite failure (`asyncio`) was on the recording side, and its cause is
+now known: **"CRIU checkpointing failed -52" = the checkpoint landed while a TCP
+connection was open** (dump.log: "Connected TCP socket, consider using
+--tcp-established"). Caught by looping run + checkpoint and reading dump.log
+before the container is removed. Fix: `CKPT_OPTS=--tcp-established`
+(test_replay.sh passes it to checkpoint and restore); podman refuses that
+option together with `--name`, so the copy keeps the original's name. Used by
+`net`, `perl`, `asyncio`. This probably explains the old "unconfirmed -52" too
+where TCP was involved; the `python` test has no TCP, so its -52 is still open.
 
 2026-11-12, after signal replay: 26 tests (`signal` must now pass; `signal-out`
 added). One round: 25 passed, `asyncio` hit the known `CRIU checkpointing failed

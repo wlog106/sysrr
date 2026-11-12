@@ -285,7 +285,7 @@ td small { color: var(--muted); }
 
 <section id="tests">
   <h2>The test suite</h2>
-  <p><code>tests/run_all.sh</code> runs each target through the same cycle: record, checkpoint, restore, replay, compare with the live run. It has 26 tests. The last full run, on 2026-11-12, was two rounds on one machine: 24 tests passed both rounds. <code>files</code> failed one round because of the test itself (it kept its files where podman archives them after the dump), and passed 4 of 4 once that was fixed. The second machine was not reachable that day.</p>
+  <p><code>tests/run_all.sh</code> runs each target through the same cycle: record, checkpoint, restore, replay, compare with the live run. It has 26 tests. The last full run, on 2026-11-12, was two rounds on one machine: 24 tests passed both rounds. <code>files</code> failed one round because of the test itself (it kept its files where podman archives them after the dump), and passed 4 of 4 once that was fixed. Later that day the suite also ran with the restore and replay on a second machine: 25 of 26 in one round, and the one failure was a checkpoint error on the recording side (see the traps under <a href="#limits">Limits</a>), fixed since. Eight tests, including the signal tests, memcached and asyncio, then passed 3 of 3 across machines.</p>
   <div class="tablewrap"><table>
     <thead><tr><th>Group</th><th>Tests</th><th>Passes when</th></tr></thead>
     <tbody>
@@ -420,7 +420,7 @@ td small { color: var(--muted); }
   <ul>
     <li><strong><code>bad size</code>:</strong> the target was growing a file during the checkpoint. Keep such files out of the container's writable layer.</li>
     <li><strong><code>can't write lsm profile -2</code>:</strong> podman loads its AppArmor profile only when it starts a container. Run <code>podman run --rm IMAGE true</code> once after boot.</li>
-    <li><strong><code>CRIU checkpointing failed -52</code>:</strong> seen now and then on the <code>python</code> test, which starts child processes constantly. The cause isn't confirmed. Try the checkpoint again.</li>
+    <li><strong><code>CRIU checkpointing failed -52</code>:</strong> one cause is confirmed. CRIU refuses a checkpoint that lands while a TCP connection is open. Add <code>--tcp-established</code> to both <code>podman container checkpoint</code> and <code>restore</code>. Podman doesn't allow that option together with <code>--name</code>, so the copy keeps the original's name. The <code>python</code> test, which has no TCP, also hits -52 now and then, and that cause isn't known yet.</li>
     <li><strong>PID 1 ignores some signals:</strong> a container's first process ignores default-action signals sent from inside, so a test of <code>SIGPIPE</code> or <code>SIGALRM</code> needs a child process.</li>
     <li><strong>CRIU refuses some objects:</strong> an open POSIX message queue, or an inotify watch on overlayfs.</li>
     <li><strong>Same paths:</strong> a bind-mounted directory must exist at the same path on the replay machine.</li>

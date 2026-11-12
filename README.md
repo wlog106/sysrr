@@ -158,6 +158,10 @@ works). Rows whose binary is missing fail.
 - Threads that take the same lock within a few hundred nanoseconds of each
   other can't always be put back in order: the log only has syscalls. `-T`
   gets most programs through; when it can't, `sysrr_replay` says so.
+- A checkpoint taken while the program has a TCP connection open fails
+  ("CRIU checkpointing failed -52") unless you add `--tcp-established` to both
+  the checkpoint and the restore command. Podman doesn't accept that option
+  with `--name`, so restore without `--name`.
 - Checkpointing while running fails if the program keeps growing a file in
   the container's own writable layer. Write such files to a volume instead.
 

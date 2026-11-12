@@ -37,6 +37,10 @@
 #                                      in sc_known.txt
 #   KICK=USR1+TERM                     send the target these signals after the
 #                                      checkpoint, four times (podman kill)
+#   CKPT_OPTS=--tcp-established        options for the checkpoint and the restore.
+#                                      Without this one CRIU refuses a checkpoint
+#                                      that lands while a TCP connection is open
+#                                      ("checkpointing failed -52").
 #   IMG=docker.io/library/python:3.12-slim   another image
 #
 # The clocksource is switched to acpi_pm for the run, on both machines, so
@@ -52,12 +56,17 @@ ARGS=${ARGS:-}
 EXPECT=${EXPECT:-end}
 KEEP_GOING=${KEEP_GOING:-}
 KICK=${KICK:-}
+CKPT_OPTS=${CKPT_OPTS:-}
 END_OPT="-e kill"
 OUT=${OUT:-/var/tmp/sysrr-replay}
 REMOTE=${REMOTE:-}
 SSH=${SSH:-ssh}
 IMG=${IMG:-docker.io/library/debian:trixie-slim}
 SRC=rrsrc DST=rrdst BAD=rrbad
+# podman refuses --tcp-established together with --name: the copy then keeps the
+# original's name (the original is removed before the restore)
+KEEPNAME=
+case "$CKPT_OPTS" in *tcp-established*) DST=$SRC BAD=$SRC KEEPNAME=1 ;; esac
 CS=/sys/devices/system/clocksource/clocksource0/current_clocksource
 CONF=/etc/criu/default.conf
 
@@ -102,7 +111,7 @@ sudo podman run -d --name $SRC --tmpfs /scratch -v "$DIR":/t:ro $IMG /t/$TARGET 
 PID=$(sudo podman inspect -f '{{.State.Pid}}' $SRC)
 sudo ../sysrr $SYSRR_OPTS -p "$PID" -o "$OUT/rec.log" 2>"$OUT/sysrr.err" &
 sleep 2
-sudo podman container checkpoint --leave-running -e "$OUT/ckpt.tar.gz" $SRC >/dev/null
+sudo podman container checkpoint --leave-running $CKPT_OPTS -e "$OUT/ckpt.tar.gz" $SRC >/dev/null
 if [ -n "$KICK" ]; then         # signals from outside, while generation 1 is recorded
 	for i in 1 2 3 4; do
 		for sig in ${KICK//+/ }; do sudo podman kill -s "$sig" $SRC >/dev/null 2>&1 || true; done
@@ -138,8 +147,10 @@ R "sudo podman run --rm $IMG true"
 
 # restore the checkpoint as container $1, left stopped by CRIU; prints its pid
 restore_stopped() {
+	local name="--name $1"
+	[ -z "$KEEPNAME" ] || name=
 	R "echo leave-stopped | sudo tee $CONF >/dev/null;
-	   sudo podman container restore --import '$OUT/ckpt.tar.gz' --name $1 >/dev/null; rc=\$?;
+	   sudo podman container restore $CKPT_OPTS --import '$OUT/ckpt.tar.gz' $name >/dev/null; rc=\$?;
 	   $RESTORE_CONF; [ \$rc = 0 ] && sudo podman inspect -f '{{.State.Pid}}' $1"
 }
 
