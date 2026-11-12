@@ -311,19 +311,32 @@ dl.gloss dd { margin: 0; }
     <div class="outcome" id="order-out" aria-live="polite"></div>
   </div>
   <p>With <code>-T</code>, replay lets only one thread run program code at a time. It decides the order from what the log does have: the exact order in which threads entered their syscalls, and the calls threads make around locks. That is a well-founded guess, not a fact from the log.</p>
-  <p>How good is the guess? If two threads take the same lock more than a microsecond apart, it's right. If they do it within a few hundred nanoseconds, the log can show them the wrong way round. Replay then stops at the first value that came out differently and says so. It doesn't pretend.</p>
+  <p>How good is the guess? Usually right. It goes wrong where two threads ran code at the same time and both touched the same memory, for example two workers taking jobs from one queue. Replay then stops at the first value that came out differently and says so.</p>
+  <h3>When the guess is wrong: searching</h3>
+  <p>A wrong guess isn't the end. Replay names the few spots where it had to guess near the failure. <code>sysrr_search.sh</code> then restores the photo again and replays with one of those guesses the other way round. It keeps a change only if the copy gets past the point where it failed before, and repeats until a replay reaches the end of the log.</p>
+  <p>Here is a real search, on a pool of four worker threads that all wake up at once. Each replay takes about a second.</p>
+  <div class="demo" id="search">
+    <div class="tl" id="search-rows"></div>
+    <div class="demo-head">
+      <button type="button" class="primary" id="search-next">Next replay</button>
+      <span class="count" id="search-count"></span>
+    </div>
+    <div class="caption" id="search-cap" aria-live="polite"></div>
+  </div>
+  <p>The order it finds fits everything in the log, but the log can't prove it's the order that happened live: other orders might fit too. What the search does prove is where the program depended on which thread came first. If you're hunting a race bug, those spots are where to look.</p>
 </section>
 
 <section id="works">
   <h2>What works today</h2>
-  <p>The test suite runs 26 programs through the whole journey and compares each copy with its original. Measured on 2026-11-12, on one machine.</p>
+  <p>The test suite runs 28 programs through the whole journey and compares each copy with its original. Measured on 2026-11-12, on one machine.</p>
   <div class="tablewrap"><table>
     <thead><tr><th>Kind of program</th><th>Result</th><th>Examples in the suite</th></tr></thead>
     <tbody>
       <tr><td>One thread: files, network, child processes</td><td><span class="pill ok">replays</span></td><td>A TCP echo loop, a file tree, a program that re-executes itself, Perl, Python with SQLite, Python asyncio</td></tr>
       <tr><td>Real servers</td><td><span class="pill ok">replays</span></td><td>Redis, nginx with two workers, memcached with four threads and four clients. Each copy ends with the same data as the original.</td></tr>
       <tr><td>Threads that share memory, a few microseconds apart</td><td><span class="pill ok">replays with -T</span></td><td>Two threads on a shared total</td></tr>
-      <tr><td>A thread pool where workers take one lock at almost the same moment</td><td><span class="pill mid">often</span></td><td>A pool of four workers: 5 of 8 runs replayed to the last line. Before 2026-11-12 it was 0 of 6.</td></tr>
+      <tr><td>A thread pool where workers take jobs from one queue at the same moment</td><td><span class="pill ok">replays with a search</span></td><td>Four workers woken at once: 6 of 6, each after 5 to 28 replays of searching. Without the search it was 2 of 6.</td></tr>
+      <tr><td>A server with several processes, each with several threads</td><td><span class="pill ok">replays with a search</span></td><td>Apache httpd, 2 processes with a listener thread and workers each, 8 clients: 3 of 3 runs served every request with the same thread of the same process as live, each after a search that changed 1 or 2 guesses.</td></tr>
       <tr><td>Clients racing for the same key on a threaded server</td><td><span class="pill mid">sometimes</span></td><td>memcached with shared keys: 1 of 3 runs with two clients, none with four</td></tr>
       <tr><td>Python threads</td><td><span class="pill no">reported</span></td><td>The interpreter's lock changes hands on a timer. Replay follows for a few dozen calls, then reports that it lost track.</td></tr>
       <tr><td>Signals from a timer or from another program</td><td><span class="pill ok">replays</span></td><td>A timer firing 30 times a second, and signals sent with <code>podman kill</code>. Each one comes back at the syscall it interrupted. One that landed in the middle of a computation comes back slightly early.</td></tr>
@@ -503,6 +516,40 @@ sudo ./sysrr_replay -p $(sudo podman inspect -f '{{.State.Pid}}' NEW) -g 1 -T re
     chips.appendChild(b);
   });
   showCall(0);
+
+  /* ---- a real search (tests/pool_target burst, 2026-11-13): [flips, progress or 'all', diverged at] ---- */
+  var TRIES = [
+    ['none', 733, 3587], ['3581', 1276, 4130], ['3581,4111', 1336, 4191],
+    ['3581,4111,4189', 1336, 4191], ['3581,4111,4185', 1336, 4191], ['3581,4111,4178', 'all', 0]
+  ];
+  var TOTAL = 2129, shown = 1;
+  var NOTES = [
+    'The plain replay. It ran 733 of the 2129 recorded calls, then a worker printed a different value at record 3587: it took a job another worker had taken live.',
+    'Record 3581 is a stretch of code where replay had guessed. Taking it the other way round, the copy gets past 3587 and on to record 4130. The change is kept.',
+    'Another guess, 4111, gets it past 4130. Kept too.',
+    'Flipping 4189 doesn\'t get past 4191, so it is dropped.',
+    'Nor does 4185.',
+    '4178 does it: the replay reaches the end of the log, and every line the copy printed matches the live run. Three guesses out of about 2000 had to change.'
+  ];
+  function drawSearch() {
+    var rows = document.getElementById('search-rows');
+    rows.innerHTML = '';
+    for (var i = 0; i < shown; i++) {
+      var t = TRIES[i], ok = t[1] === 'all', w = ok ? 100 : Math.round(100 * t[1] / TOTAL);
+      var kept = ok || (i + 1 < TRIES.length && TRIES[i + 1][0].indexOf(t[0]) === 0 && t[0] !== 'none') || i === 0;
+      var row = document.createElement('div'); row.className = 'tl-row';
+      row.innerHTML = '<span>try ' + (i + 1) + '</span><div class="track"><div class="bar ' + (ok ? 'sys' : 'code' + (kept ? '' : ' clash')) +
+        '" style="left:0;width:' + w + '%">' + (t[0] === 'none' ? 'no flips' : '-F ' + t[0]) + '</div></div>';
+      rows.appendChild(row);
+    }
+    document.getElementById('search-count').textContent = shown + ' / ' + TRIES.length;
+    document.getElementById('search-cap').innerHTML = '<p>' + NOTES[shown - 1] + '</p>';
+    document.getElementById('search-next').textContent = shown === TRIES.length ? 'Start over' : 'Next replay';
+  }
+  document.getElementById('search-next').addEventListener('click', function () {
+    shown = shown === TRIES.length ? 1 : shown + 1; drawSearch();
+  });
+  drawSearch();
 
   /* ---- two threads: bars are [left %, width %, kind, label] ---- */
   var MODES = {

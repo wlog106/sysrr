@@ -280,6 +280,9 @@ struct ent {                        /* one recorded syscall */
 	u64 key;                    /* -T: its place in the serial order */
 	u64 enter;                  /* -T: ts_enter, made to agree with seq */
 	u64 lock_addr, late_key;    /* -T: its stretch ends waiting for this lock (lock_free_yet) */
+	u64 key_start, key_end;     /* -T: the two ends of the stretch after it (-F flips between them) */
+	const struct ent *dep[4];   /* -T: records of other threads that caused its result */
+	unsigned char ndep, skipped;
 	const struct rec_signal *sig[4];   /* signals the thread got right after this call */
 	unsigned char nsig, sig_done, kill_used;
 };
@@ -297,6 +300,9 @@ struct thr {                        /* one recorded thread */
 	int past_end;               /* asked for a syscall after its last record */
 	int lock_wait;              /* -T: sleeps in a real futex wait the recording lacks */
 	u64 wait_addr;              /* ... on this futex */
+	u64 hw_id;                  /* -T: an unrecorded futex wait, held instead of run (0 = none) */
+	int hw_lfd, hw_woken, hw_timed;
+	u32 hw_tgid;
 	const struct rec_signal *startsig[4];  /* signals it got before its first call */
 	int nstart;
 	pid_t start_tid;            /* -T: held in a ptrace stop until its turn to start */
@@ -860,7 +866,7 @@ static enum { RUN, ENDED, DIVERGED, LIVE } state = RUN;
 static int relax_order;
 static int reordered;               /* -T: lock_free_yet moved a record */
 static struct thr *jump_thr;        /* -T: this thread may go ahead of its turn (lock_holder_first) */
-static unsigned long n_jump, n_ptrdiff, n_memslack;
+static unsigned long n_jump, n_ptrdiff, n_memslack, n_skipsleep, n_held_waits, n_spurious;
 static unsigned long n_relaxed;
 static unsigned long n_fake, n_pass, n_argwarn, n_inwarn, in_bytes, out_bytes;
 static unsigned long n_fds, n_fdwarn, n_pin, n_pidpin, n_slack, n_sig;
@@ -1120,6 +1126,12 @@ static void print_totals(void)
 		printf("   %lu memory call(s) went another way than recorded (an allocator's mmap or "
 		       "munmap, or a mapping whose recorded place was in use): memory is laid out "
 		       "differently, the data is checked as usual\n", n_memslack);
+	if (n_held_waits)
+		printf("   %lu futex wait(s) the recording lacks were emulated (held until a wake%s)\n",
+		       n_held_waits, n_spurious ? "; some released without one when nothing else could move" : "");
+	if (n_skipsleep)
+		printf("   %lu time(s) the thread in turn sat in a wait the recording lacks and the "
+		       "others went on without it\n", n_skipsleep);
 	if (n_jump)
 		printf("   %lu time(s) a thread went ahead of one that was waiting for its lock\n", n_jump);
 	if (n_sigplan)
@@ -1133,17 +1145,91 @@ static void print_totals(void)
 	fflush(stdout);
 }
 
+static struct thr *div_thr;           /* the thread a divergence was found in */
+
+/* For sysrr_search.sh: how far the replay got, and which ordering decisions near
+ * the divergence are worth trying the other way.  A decision is the place of one
+ * stretch of user code (-T): its start or its end.  Candidates are the diverging
+ * thread's last stretches and the other threads' stretches that overlapped them,
+ * nearest first. */
+static int overlaps(const struct ent *e, u64 lo, u64 hi)
+{
+	return e->key_end > e->key_start && e->key_start < hi && e->key_end > lo;
+}
+
+static void add_cand(const struct ent **c, size_t *nc, const struct ent *e)
+{
+	for (size_t i = 0; i < *nc; i++)
+		if (c[i] == e)
+			return;
+	if (*nc < 32)
+		c[(*nc)++] = e;
+}
+
+static void search_report(void)
+{
+	struct thr *t = div_thr;
+	const struct ent *c[32], *own[4];
+	size_t nc = 0, nown = 0, used = nents - remaining;
+
+	printf("SEARCH progress: %zu\n", used);
+	if (t && t->pos < t->n)
+		printf("SEARCH at: %llu\n", (unsigned long long)t->q[t->pos]->s->h.seq);
+	if (!opt_serial || !t)
+		return;
+	/* the diverging thread's last four stretches, latest first: the decision that
+	 * went wrong was made in one of them, most likely the last */
+	for (size_t j = t->pos; j-- > 0 && nown < 4;)
+		if (t->q[j]->done && t->q[j]->key_end > t->q[j]->key_start)
+			own[nown++] = t->q[j];
+	/* for each of them, latest first: itself, then the eight stretches of other
+	 * threads that overlapped it (ran user code while it did) nearest to its end */
+	for (size_t k = 0; k < nown; k++) {
+		const struct ent *o = own[k];
+		const struct ent *ov[32];
+		size_t nov = 0;
+		for (size_t i = 0; i < nents && nov < 32; i++)
+			if (thr_of(ents[i].s->ns_tid) != t && overlaps(&ents[i], o->key_start, o->key_end))
+				ov[nov++] = &ents[i];
+		/* nearest first: by distance of the other stretch's start to o's end */
+		for (size_t x = 0; x < nov; x++)
+			for (size_t y = x + 1; y < nov; y++) {
+				u64 dx = ov[x]->key_start > o->key_end ? ov[x]->key_start - o->key_end : o->key_end - ov[x]->key_start;
+				u64 dy = ov[y]->key_start > o->key_end ? ov[y]->key_start - o->key_end : o->key_end - ov[y]->key_start;
+				if (dy < dx) {
+					const struct ent *tmp = ov[x]; ov[x] = ov[y]; ov[y] = tmp;
+				}
+			}
+		add_cand(c, &nc, o);
+		for (size_t x = 0; x < nov && x < 8; x++)
+			add_cand(c, &nc, ov[x]);
+	}
+	printf("SEARCH candidates:");
+	for (size_t i = 0; i < nc && i < 24; i++)
+		printf(" %llu", (unsigned long long)c[i]->s->h.seq);
+	printf("\n");
+}
+
 static void finish(const char *why)
 {
 	printf("\n== %s ==\n", why);
 	print_totals();
 	report_live_end();
+	if (state == DIVERGED || !strncmp(why, "diverged", 8))
+		search_report();
+	else if (!strcmp(why, "end of the recording reached"))
+		printf("SEARCH progress: all\n");
 	for (size_t i = 0; i < nthrs; i++)      /* -T: threads that never got to start */
 		if (thrs[i].start_tid)
 			ptrace(PTRACE_DETACH, thrs[i].start_tid, 0, 0), thrs[i].start_tid = 0;
 	switch (opt_end) {
 	case END_LIVE:
 		state = LIVE;
+		for (size_t i = 0; i < nthrs; i++)      /* held futex waits: the real kernel now */
+			if (thrs[i].hw_id) {
+				lfd = thrs[i].hw_lfd;
+				respond(thrs[i].hw_id, 1, 0), thrs[i].hw_id = 0;
+			}
 		for (size_t i = 0; i < nthrs; i++)
 			if (thrs[i].held_id) {
 				lfd = thrs[i].held_lfd;
@@ -1193,6 +1279,7 @@ static void diverge(struct thr *t, const struct ent *e, const struct seccomp_not
 	fmt_call(b2, sizeof(b2), req->data.nr, (const u64 *)req->data.args, nargs(req->data.nr));
 	printf("\n!! DIVERGENCE in thread %u at record #%llu (%zu of %zu for this thread): %s\n",
 	       t->ns_tid, (unsigned long long)s->h.seq, t->pos + 1, t->n, what);
+	div_thr = t;
 	printf("     expected  %s = %lld\n", b1, (long long)s->ret);
 	printf("     actual    %s\n", b2);
 	if (req->data.nr == SYS_getrandom && (long)s->nr != SYS_getrandom && from_vdso(req))
@@ -1898,10 +1985,19 @@ static struct ent *next_ent(struct thr *t)
  * clone does, but the child only exists once that clone has been released.  An
  * execve: after vfork the parent wakes in the middle of the child's execve and
  * its next calls return first, but it cannot wake until the execve has run. */
+/* calls that give a number or an address back to the kernel: it is free from the
+ * moment they start, and another thread's open or mmap may get it before they
+ * return */
+static int frees(long nr)
+{
+	return nr == SYS_close || nr == SYS_close_range || nr == SYS_munmap || nr == SYS_dup2 ||
+	       nr == SYS_dup3;
+}
+
 static u64 release_time(const struct ent *e)
 {
 	const struct rec_syscall *r = e->s;
-	int early = is_clone(r->nr) || r->nr == SYS_execve || r->nr == SYS_execveat;
+	int early = is_clone(r->nr) || r->nr == SYS_execve || r->nr == SYS_execveat || frees(r->nr);
 	return early && e->enter ? e->enter : r->ts_exit;
 }
 
@@ -1926,8 +2022,76 @@ static int cmp_exit(const void *a, const void *b)
  * 1 of 6; the nginx and two-thread tests pass either way.
  * The place is a moment inside the stretch, so stretches that did not overlap
  * keep their order whatever the rule. */
+/* -F: records whose stretch takes the other end as its place in the order */
+static u64 *flips;
+static size_t nflips;
+
+static int flipped(u64 seq)
+{
+	for (size_t i = 0; i < nflips; i++)
+		if (flips[i] == seq)
+			return 1;
+	return 0;
+}
+
+/* -T.  Some results can only exist because another thread made a call first: an
+ * epoll_wait returns an event only after the epoll_ctl ADD or MOD that armed it.
+ * The order of stretches is a guess; this is a fact, so it is enforced: such a
+ * record is not answered before the records it depends on. */
+static const struct rec_data *piece(const struct ent *e, int kind, int arg)
+{
+	for (unsigned i = 0; i < e->nd; i++)
+		if (e->d[i]->kind == kind && e->d[i]->arg == arg && !(e->d[i]->h.flags & DF_EXIT))
+			return e->d[i];
+	return NULL;
+}
+
+static void find_deps(void)
+{
+	for (size_t i = 0; i < nents; i++) {
+		struct ent *w = &ents[i];
+		const struct rec_data *out;
+		long nr = w->s->nr;
+
+		if (w->done || w->s->ret <= 0 ||
+		    (nr != SYS_epoll_wait && nr != SYS_epoll_pwait && nr != SYS_epoll_pwait2) ||
+		    !(out = piece(w, D_OUT, 1)))
+			continue;
+		for (u32 off = 0; off + 12 <= out->len && w->ndep < 4; off += 12) {
+			u64 data;
+			memcpy(&data, out->data + off + 4, 8);
+			/* the latest ADD or MOD of this epoll fd with this data that returned
+			 * before the wait did */
+			for (size_t j = i, n = 0; j-- > 0 && n < 20000; n++) {
+				const struct ent *c = &ents[j];
+				const struct rec_data *in;
+				u64 cd;
+				if (c->s->nr != SYS_epoll_ctl || c->s->args[0] != w->s->args[0] ||
+				    (c->s->args[1] != 1 && c->s->args[1] != 3) || c->s->ret != 0 ||
+				    c->s->ts_exit > w->s->ts_exit || !(in = piece(c, D_IN, 3)) || in->len < 12)
+					continue;
+				memcpy(&cd, in->data + 4, 8);
+				if (cd != data)
+					continue;
+				if (c->s->ns_tid != w->s->ns_tid && !c->done)
+					w->dep[w->ndep++] = c;
+				break;
+			}
+		}
+	}
+}
+
+static int dep_waiting(const struct ent *e)
+{
+	for (int i = 0; i < e->ndep; i++)
+		if (!e->dep[i]->done)
+			return 1;
+	return 0;
+}
+
 static void order_serial(void)
 {
+	find_deps();
 	/* seq is the true order of syscall entries.  The entry timestamp is read
 	 * just after seq is taken, so two entries less than a microsecond apart
 	 * can have timestamps the other way round: pull the earlier one down. */
@@ -1951,15 +2115,10 @@ static void order_serial(void)
 			if (e->done)
 				continue;
 			e->key = release_time(e);
-			if (is_clone(r->nr) || r->nr == SYS_execve || r->nr == SYS_execveat || !n)
-				;
-			/* A call that gives something back to the kernel (a descriptor
-			 * number, an address range) runs for real when it is released,
-			 * and the next open or mmap of another thread may be recorded
-			 * with that very number or address.  It keeps the place of its
-			 * own return, so these stay in the kernel's order. */
-			else if (r->nr == SYS_close || r->nr == SYS_close_range || r->nr == SYS_munmap ||
-				 r->nr == SYS_dup2 || r->nr == SYS_dup3)
+			/* (a call that frees a number or an address keeps the place of
+			 * its start: release_time) */
+			if (is_clone(r->nr) || r->nr == SYS_execve || r->nr == SYS_execveat || !n ||
+			    frees(r->nr))
 				;
 			/* It ends by waiting for a lock (value 2: "locked, with waiters",
 			 * the convention of glibc, musl, Go, Rust): it found the lock
@@ -1973,6 +2132,12 @@ static void order_serial(void)
 			}
 			else if (nx->enter > e->key)
 				e->key = nx->enter;
+			e->key_start = release_time(e);
+			e->key_end = nx && nx->enter > e->key_start ? nx->enter : e->key_start;
+			if (flipped(r->h.seq) && e->key_end > e->key_start) {
+				e->key = e->key == e->key_start ? e->key_end : e->key_start;
+				e->lock_addr = 0;
+			}
 			nx = e;
 		}
 	}
@@ -2056,6 +2221,17 @@ static int lock_free_yet(struct ent *e, pid_t tid)
 	return 1;
 }
 
+/* A thread asleep in a wait the recording lacks (lock_wait) found a lock taken or
+ * a queue empty that, live, it found free or filled: the stretch that frees or
+ * fills it overlapped its own, and the order chose wrong.  It is not waited for:
+ * the others go on in recorded order until one of them wakes it, and then its
+ * record is the earliest left, so its turn comes back at once. */
+static int asleep(const struct ent *e)
+{
+	struct thr *t = thr_of(e->s->ns_tid);
+	return t && t->lock_wait && !(t->hw_id && t->hw_woken);
+}
+
 static int next_exit_is(const struct ent *e)
 {
 	struct thr *h = first_held();
@@ -2063,7 +2239,17 @@ static int next_exit_is(const struct ent *e)
 		return 0;               /* a thread has to start first */
 	while (xnext < nents && byexit[xnext]->done)
 		xnext++;
-	return xnext < nents && byexit[xnext] == e;
+	for (size_t i = xnext; i < nents; i++) {
+		if (byexit[i]->done)
+			continue;
+		if (byexit[i] == e)
+			return !dep_waiting(e);
+		if (!asleep(byexit[i]) && !dep_waiting(byexit[i]))
+			return 0;
+		if (!byexit[i]->skipped && asleep(byexit[i]))
+			byexit[i]->skipped = 1, n_skipsleep++;
+	}
+	return 0;
 }
 
 static struct thr *running_thread(const struct thr *except)
@@ -2228,6 +2414,137 @@ static int range_mapped(pid_t pid, u64 addr, u64 len)
 	return hit;
 }
 
+/* which arguments of this call are file descriptors (at most 2) */
+static int fd_args(long nr, const u64 *a, int *idx)
+{
+	switch (nr) {
+	case SYS_read: case SYS_write: case SYS_pread64: case SYS_pwrite64: case SYS_readv:
+	case SYS_writev: case SYS_preadv: case SYS_pwritev: case SYS_preadv2: case SYS_pwritev2:
+	case SYS_recvfrom: case SYS_sendto: case SYS_recvmsg: case SYS_sendmsg: case SYS_recvmmsg:
+	case SYS_sendmmsg: case SYS_shutdown: case SYS_getsockname: case SYS_getpeername:
+	case SYS_getsockopt: case SYS_setsockopt: case SYS_accept: case SYS_accept4:
+	case SYS_connect: case SYS_bind: case SYS_listen: case SYS_fstat: case SYS_lseek:
+	case SYS_fsync: case SYS_fdatasync: case SYS_ftruncate: case SYS_getdents64:
+	case SYS_fstatfs: case SYS_flock: case SYS_close: case SYS_epoll_wait: case SYS_epoll_pwait:
+		idx[0] = 0;
+		return 1;
+	case SYS_sendfile: case SYS_epoll_ctl:
+		idx[0] = 0, idx[1] = nr == SYS_sendfile ? 1 : 2;
+		return 2;
+	case SYS_mmap:
+		if (a[3] & MAP_ANONYMOUS)
+			return 0;
+		idx[0] = 4;
+		return 1;
+	}
+	return 0;
+}
+
+/* -T.  A futex wait the recording lacks is not run for real.  Asleep in the
+ * kernel, the thread would wake whenever another thread's wake reached it and run
+ * user code at once, next to the thread whose turn it is: the one place left
+ * where two threads ran at the same time, and replays of the same log came out
+ * differently.  So the wait is emulated: if the futex word already differs it
+ * fails with EAGAIN, as the kernel's would; else the thread is held.  Every wake
+ * passes through here too (note_wake) and marks held waiters on that address;
+ * a woken one is answered (0) at its turn in the order (release_woken).  A
+ * wake-up without a wake is allowed for futex (spurious), and is the last resort
+ * when nothing else can move. */
+static int hold_wait(struct thr *t, const struct seccomp_notif *req)
+{
+	u32 word;
+
+	if (req->data.nr != SYS_futex || !futex_waits(req->data.args[1]) || t->hw_id)
+		return 0;
+	if (mem_read(req->pid, req->data.args[0], &word, sizeof(word)))
+		return 0;
+	if (word != (u32)req->data.args[2]) {
+		respond(req->id, 0, -EAGAIN);
+		t->running = 1;
+		return 1;
+	}
+	t->hw_id = req->id, t->hw_lfd = lfd, t->hw_woken = 0;
+	t->hw_timed = req->data.args[3] != 0;
+	t->hw_tgid = tgid_of(req->pid);
+	t->lock_wait = 1, t->wait_addr = req->data.args[0];
+	t->running = 0;
+	n_held_waits++;
+	if (opt_verbose)
+		printf("         %-5u holds futex(%#llx) wait (not in the recording)\n", t->ns_tid,
+		       (unsigned long long)req->data.args[0]);
+	return 1;
+}
+
+static int wake_count(u64 op, const u64 *a)
+{
+	switch (op & 0x7f) {
+	case 1: case 10: return (int)a[2];              /* WAKE, WAKE_BITSET */
+	case 5: return (int)a[2] + (int)a[3];           /* WAKE_OP: both addresses */
+	case 3: case 4: return 0x7fffffff;              /* REQUEUE: wake them all here */
+	}
+	return 0;
+}
+
+static void note_wake(const struct seccomp_notif *req)
+{
+	const u64 *a = (const u64 *)req->data.args;
+	int n = wake_count(a[1], a);
+	u32 g = tgid_of(req->pid);
+	int priv = !!(a[1] & 128);
+
+	for (size_t i = 0; i < nthrs && n > 0; i++) {
+		struct thr *t = &thrs[i];
+		if (!t->hw_id || t->hw_woken || (priv && t->hw_tgid != g))
+			continue;
+		if (t->wait_addr == a[0] || ((a[1] & 0x7f) == 5 && t->wait_addr == a[4]) ||
+		    ((a[1] & 0x7f) >= 3 && (a[1] & 0x7f) <= 4 && t->wait_addr == a[4]))
+			t->hw_woken = 1, n--;
+	}
+}
+
+static void answer_held(struct thr *t, s64 ret)
+{
+	int keep = lfd;
+	lfd = t->hw_lfd;
+	respond(t->hw_id, 0, ret);
+	lfd = keep;
+	t->hw_id = 0, t->hw_woken = 0, t->lock_wait = 0;
+	t->running = opt_serial;
+}
+
+/* answer a woken held wait when its thread's turn comes; 1 if one was */
+static int release_woken(void)
+{
+	if (running_thread(NULL))
+		return 0;
+	for (size_t i = 0; i < nthrs; i++) {
+		struct thr *t = &thrs[i];
+		struct ent *e;
+		if (!t->hw_id || !t->hw_woken)
+			continue;
+		e = next_ent(t);
+		if (!e || next_exit_is(e) || relax_order) {
+			answer_held(t, 0);
+			return 1;
+		}
+	}
+	return 0;
+}
+
+/* nothing can move: wake one held wait without a wake (allowed: spurious), a
+ * timed one first, as its timeout would have */
+static int release_any_held(void)
+{
+	struct thr *pick = NULL;
+	for (size_t i = 0; i < nthrs; i++)
+		if (thrs[i].hw_id && (!pick || (thrs[i].hw_timed && !pick->hw_timed)))
+			pick = &thrs[i];
+	if (!pick)
+		return 0;
+	answer_held(pick, pick->hw_timed ? -ETIMEDOUT : 0);
+	return 1;
+}
+
 /* Handle one notification.  Returns 1 if it was answered or deliberately
  * held, 0 if it must wait for its turn (strict mode). */
 static int handle(struct seccomp_notif *req)
@@ -2368,10 +2685,14 @@ static int handle(struct seccomp_notif *req)
 	}
 	if (timing && e && !same_call(e, req)) {        /* not in the recording: it still runs */
 		n_slack++;
+		if (opt_serial && hold_wait(t, req))
+			return 1;
 		if (opt_verbose) {
 			fmt_call(b, sizeof(b), req->data.nr, (const u64 *)req->data.args, 3);
 			printf("         %-5u real %s (not in the recording: timing only)\n", ns, b);
 		}
+		if (req->data.nr == SYS_futex)
+			note_wake(req);
 		respond(req->id, 1, 0);
 		/* (a real sleep: the others go on, it may be polling for their work) */
 		if (opt_serial)
@@ -2450,6 +2771,25 @@ static int handle(struct seccomp_notif *req)
 			       (unsigned long long)req->data.args[i], (unsigned long long)e->s->args[i]);
 		}
 
+	/* A file descriptor is a choice the program made from its own state (which
+	 * connection, which file).  Unlike an address it cannot differ for a harmless
+	 * reason: the thread is working on something else than live. */
+	int fa[2], nfa = fd_args(req->data.nr, (const u64 *)req->data.args, fa);
+	for (int i = 0; i < nfa; i++)
+		if ((u32)e->s->args[fa[i]] != (u32)req->data.args[fa[i]]) {
+			char what[64];
+			snprintf(what, sizeof(what), "file descriptor differs (arg%d)", fa[i]);
+			diverge(t, e, req, what);
+			if (!opt_cont) {
+				history(t);
+				state = DIVERGED;
+				t->held_id = req->id, t->held_lfd = lfd;
+				finish("diverged");
+				return 1;
+			}
+			break;
+		}
+
 	if (check_inputs(t, e, req)) {
 		n_inwarn++;
 		if (!opt_cont) {
@@ -2493,6 +2833,8 @@ static int handle(struct seccomp_notif *req)
 	if (nn && fr > 0 && !cont && return_with_signals(req, e->s->ret, 0, nums, nn) == 0) {
 		;
 	} else {
+		if (cont && req->data.nr == SYS_futex)
+			note_wake(req);
 		if (fr > 0 && respond(req->id, cont, e->s->ret))
 			return 1;
 		/* second best (a call that ran for real, or made fds): just after it */
@@ -2544,6 +2886,8 @@ static void explain_stall(int nparked)
 		want = gnext < nents ? &ents[gnext] : NULL;
 	}
 	printf("   stalled: %d thread(s) parked, waiting for their turn\n", nparked);
+	if (want && !div_thr)
+		div_thr = thr_of(want->s->ns_tid);
 	if (want) {
 		fmt_call(b, sizeof(b), want->s->nr, want->s->args, nargs(want->s->nr));
 		printf("   next in the recording: thread %u, record #%llu %s = %lld\n", want->s->ns_tid,
@@ -2678,6 +3022,10 @@ static void supervise(void)
 						j++;
 					}
 				}
+			} else if (opt_serial && state == RUN && (release_woken() ||
+				   (!running_thread(NULL) && release_any_held()))) {
+				/* a held wait was the way forward (see hold_wait) */
+				n_spurious++;
 			} else if (nparked && state == RUN && n_relaxed >= MAX_RELAX) {
 				/* no use: the no-progress check below ends it */
 			} else if (nparked && state == RUN) {
@@ -2764,6 +3112,8 @@ static void supervise(void)
 					j = reordered ? 0 : j + 1;      /* the order changed: look again */
 				}
 			}
+			while (opt_serial && release_woken())
+				;
 			while ((jump_thr = lock_holder_first())) {
 				int went = 0;
 				for (int j = 0; j < nparked && !went; j++) {
@@ -2795,7 +3145,7 @@ int main(int argc, char **argv)
 	int gen = -1, c;
 	pid_t pid = 0;
 
-	while ((c = getopt(argc, argv, "p:g:e:STcvNw:")) != -1) {
+	while ((c = getopt(argc, argv, "p:g:e:STcvNw:F:")) != -1) {
 		switch (c) {
 		case 'p': pid = atoi(optarg); break;
 		case 'g': gen = atoi(optarg); break;
@@ -2807,6 +3157,14 @@ int main(int argc, char **argv)
 			break;
 		case 'S': opt_strict = 1; break;
 		case 'T': opt_serial = 1; break;
+		case 'F':
+			for (char *q = optarg; *q; ) {
+				flips = realloc(flips, (nflips + 1) * sizeof(*flips));
+				flips[nflips++] = strtoull(q, &q, 10);
+				while (*q == ',' || *q == ' ')
+					q++;
+			}
+			break;
 		case 'c': opt_cont = 1; break;
 		case 'v': opt_verbose = 1; break;
 		case 'N': opt_nofd = 1; break;
@@ -2819,7 +3177,7 @@ int main(int argc, char **argv)
 	}
 	if (!pid || optind != argc - 1) {
 usage:
-		fprintf(stderr, "usage: %s -p PID [-g GEN] [-e stop|live|kill] [-S|-T] [-c] [-v] "
+		fprintf(stderr, "usage: %s -p PID [-g GEN] [-e stop|live|kill] [-S|-T [-F SEQ,...]] [-c] [-v] "
 			"[-N] [-w FILE] rec.log\n", argv[0]);
 		return 2;
 	}

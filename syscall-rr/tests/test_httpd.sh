@@ -17,7 +17,11 @@
 # different processes may come in another order (they share one pipe), so the
 # sorted lines are compared.  No client ever talked to B.
 #
-# Environment: REPLAY_OPTS (default -T), REMOTE=host, SSH="ssh -i key", OUT, CLIENTS, REQS
+# If the replay diverges, sysrr_search.sh looks for an order of the threads that
+# fits the whole recording (SEARCH=tries, default 40, 0 = off), and the final
+# replay uses it.
+#
+# Environment: REPLAY_OPTS (default -T), REMOTE=host, SSH="ssh -i key", OUT, CLIENTS, REQS, SEARCH
 set -e -o pipefail
 cd "$(dirname "$0")"
 DIR=$PWD
@@ -102,7 +106,7 @@ sudo podman rm -f -t 0 $SRC >/dev/null
 
 if [ -n "$REMOTE" ]; then
 	echo "--- copy to $REMOTE: sysrr_replay, client, checkpoint, log"
-	tar -C .. -cf - sysrr_replay | $SSH "$REMOTE" "tar -C '$DIR/..' -xf -"
+	tar -C .. -cf - sysrr_replay sysrr_search.sh | $SSH "$REMOTE" "tar -C '$DIR/..' -xf -"
 	put "$OUT/ckpt.tar.gz"
 	put "$OUT/rec.log"
 	if ! $SSH "$REMOTE" "sudo podman image exists $IMG"; then
@@ -113,21 +117,42 @@ fi
 WHERE=$(R hostname)
 R "sudo podman run --rm $IMG true"      # load podman's AppArmor profile there (REPLAY.md)
 
-echo "--- restore on $WHERE, left stopped"
-PID2=$(R "echo leave-stopped | sudo tee $CONF >/dev/null;
-	   sudo podman container restore --import '$OUT/ckpt.tar.gz' --name $DST >/dev/null; rc=\$?;
-	   $RESTORE_CONF; [ \$rc = 0 ] && sudo podman inspect -f '{{.State.Pid}}' $DST")
-echo "restored pid $PID2: $(R "grep State /proc/$PID2/status")"
+# restore the checkpoint as $DST, left stopped, and replay it live with flips $1
+replay_live() {
+	R "sudo pkill -INT -x sysrr_replay; sleep 0.3; sudo podman rm -f -t 0 $DST >/dev/null 2>&1; true"
+	PID2=$(R "echo leave-stopped | sudo tee $CONF >/dev/null;
+		   sudo podman container restore --import '$OUT/ckpt.tar.gz' --name $DST >/dev/null; rc=\$?;
+		   $RESTORE_CONF; [ \$rc = 0 ] && sudo podman inspect -f '{{.State.Pid}}' $DST")
+	echo "restored pid $PID2: $(R "grep State /proc/$PID2/status")"
+	R "rm -f '$OUT/replay_out.txt'; setsid -f sudo ../sysrr_replay $REPLAY_OPTS ${1:+-F $1} -p $PID2 -g 1 -e live \
+		-w '$OUT/replay_out.txt' '$OUT/rec.log' >'$OUT/replay.raw' 2>&1 </dev/null"
+	for i in $(seq 450); do
+		R "grep -qE 'end of the recording|DIVERGENCE|target exited|sysrr_replay:' '$OUT/replay.raw'" && break
+		sleep 0.2
+	done
+	sleep 0.3
+	R "cat '$OUT/replay.raw'" >"$OUT/replay.txt"
+}
 
-echo "--- replay on $WHERE (-e live: B goes on for real after the recording)"
-R "setsid -f sudo ../sysrr_replay $REPLAY_OPTS -p $PID2 -g 1 -e live -w '$OUT/replay_out.txt' '$OUT/rec.log' \
-	>'$OUT/replay.raw' 2>&1 </dev/null"
-for i in $(seq 450); do
-	R "grep -qE 'end of the recording|DIVERGENCE|target exited|sysrr_replay:' '$OUT/replay.raw'" && break
-	sleep 0.2
-done
-sleep 0.3
-R "cat '$OUT/replay.raw'" >"$OUT/replay.txt"; grep -v '^#' "$OUT/replay.txt" | tail -25
+echo "--- restore on $WHERE, left stopped; replay (-e live: B goes on for real after the recording)"
+replay_live
+grep -v '^#' "$OUT/replay.txt" | tail -25
+FLIPS=
+if grep -q DIVERGENCE "$OUT/replay.txt" && [ "${SEARCH:-40}" != 0 ]; then
+	# Which thread went first, where two overlapped, is a guess: search for an
+	# order of threads that replays the whole recording (sysrr_search.sh)
+	echo "--- diverged: searching for an order of threads that fits the recording"
+	R "sudo pkill -INT -x sysrr_replay; sleep 0.3; sudo podman rm -f -t 0 $DST >/dev/null 2>&1;
+	   ../sysrr_search.sh -n ${SEARCH:-40} -o '$(echo $REPLAY_OPTS | sed 's/-T//')' \
+	   -i '$OUT/ckpt.tar.gz' '$OUT/rec.log'" | tee "$OUT/search.txt" | tail -3 || true
+	FLIPS=$(sed -n 's/^FOUND -F \([0-9,]*\).*/\1/p' "$OUT/search.txt")
+	[ "$FLIPS" != none ] || FLIPS=
+	if grep -q '^FOUND' "$OUT/search.txt"; then
+		echo "--- replay again${FLIPS:+ with -F $FLIPS}"
+		replay_live "$FLIPS"
+		grep -v '^#' "$OUT/replay.txt" | tail -6
+	fi
+fi
 
 fail=0
 [ -z "$REMOTE" ] || R "cat '$OUT/replay_out.txt'" >"$OUT/replay_out.txt"
@@ -136,5 +161,5 @@ echo "replayed B: $(wc -l <"$OUT/replayed.txt") log lines"
 grep -q 'end of the recording reached' "$OUT/replay.txt" || { echo "FAIL: replay did not reach the end"; fail=1; }
 cmp -s "$OUT/live.txt" "$OUT/replayed.txt" || { echo "FAIL: log lines differ ($(comm -3 "$OUT/live.txt" "$OUT/replayed.txt" | wc -l) lines)"; fail=1; }
 grep -q DIVERGENCE "$OUT/replay.txt" && { echo "FAIL: divergence"; fail=1; }
-[ $fail = 0 ] && echo "PASS: httpd on $WHERE served every request with the same thread of the same process"
+[ $fail = 0 ] && echo "PASS: httpd on $WHERE served every request with the same thread of the same process${FLIPS:+ (order found by search: -F $FLIPS)}"
 exit $fail

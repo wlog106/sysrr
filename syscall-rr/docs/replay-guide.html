@@ -203,7 +203,29 @@ td small { color: var(--muted); }
       <tr><td>The thread whose turn it is waits for a lock that a later thread holds</td><td>Lets the holder go first, if its call had already returned in the recording.</td><td>The holder kept the lock across a syscall. Before this rule the replay stalled for 2 s and then guessed.</td></tr>
     </tbody>
   </table></div>
-  <p>What's left is physical. If two threads release the same lock and enter the kernel within a few hundred nanoseconds, the log can show them in the wrong order. Replay then diverges at the first value that depended on it, and says so.</p>
+  <p>A server with several processes of several threads (Apache httpd) taught four more rules:</p>
+  <div class="tablewrap"><table>
+    <thead><tr><th>Situation</th><th>What replay does</th><th>What went wrong before</th></tr></thead>
+    <tbody>
+      <tr><td><code>close</code>, <code>munmap</code>, <code>dup2</code></td><td>Takes its place by when it started.</td><td>A <code>close(14)</code> returned after another thread's <code>open</code> had already got 14. Replay ran the open first, found 14 taken, and the real close then closed the wrong file.</td></tr>
+      <tr><td>The thread whose turn it is sleeps in a wait the recording doesn't have</td><td>The others go on in order without it. The wait isn't run in the kernel: replay holds the thread and notes every wake on that address, and the thread continues at its turn once it has been woken.</td><td>Everyone waited 2 seconds, then replay guessed blindly. And when the kernel did the waking, the thread ran next to the one whose turn it was, so two replays of the same log could end differently.</td></tr>
+      <tr><td>An <code>epoll_wait</code> returns an event that another thread's <code>epoll_ctl</code> armed</td><td>Not answered before that <code>epoll_ctl</code>. This one is a fact from the log, not a guess.</td><td>httpd got an event for a connection a worker still held, logged "unexpected state" and aborted. The recorder didn't even record what <code>epoll_ctl</code> was given; now it does.</td></tr>
+      <tr><td>A call gets another file descriptor than recorded</td><td>A divergence, at once.</td><td>Only a warning. The thread was serving another connection, and the visible failure came 200 records later in another thread.</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3>When the order is a guess: searching</h3>
+  <p>Some guesses can't be made right by a rule. In httpd the listener thread decides from counters the workers update in shared memory, and which of two overlapping stretches touched them first isn't in the log. Neither "by start" nor "by end" is right every time.</p>
+  <p>So replay searches. A replay is deterministic once every guess is fixed, so a guess can be tried the other way round:</p>
+  <ol class="flow">
+    <li class="u"><div><span class="who">sysrr_replay</span>On a divergence, prints the record that diverged and the suspects: the diverging thread's last four stretches, each followed by the eight stretches of other threads that overlapped it.</div></li>
+    <li class="u"><div><span class="who">sysrr_search.sh</span>Restores the checkpoint again and replays with <code>-F SEQ</code>, which puts one suspect at its other end.</div></li>
+    <li class="u"><div><span class="who">Keep or drop</span>The flip is kept only if the replay gets past the record that diverged. If no single flip helps, pairs of the six strongest suspects are tried.</div></li>
+    <li class="t"><div><span class="who">Done</span>When a replay reaches the end: <code>FOUND -F 3581,4111,4178</code>. Replay with that option to look at the copy.</div></li>
+  </ol>
+  <p>Results: the thread pool with four workers woken at once went from 2 of 6 to 6 of 6, after 5 to 28 replays each. httpd passed 3 of 3, each time with 1 or 2 flips.</p>
+  <p>A search only works if replaying the same log with the same flips always gives the same result. At first it didn't: a thread sleeping in a wait the recording doesn't have was woken by the kernel whenever another thread's wake reached it, and then ran next to the thread whose turn it was. Now replay never lets such a wait into the kernel. It holds the thread, notes every wake on that address as it passes through, and lets the thread continue at its turn.</p>
+  <p>Two things to keep in mind. The order found fits the whole log, but other orders might fit too, so it isn't proof of what happened live. And the flips it needed are exactly the places where the program depended on thread timing. For finding a race bug, that list is a result in itself.</p>
 </section>
 
 <section id="children">
@@ -285,14 +307,15 @@ td small { color: var(--muted); }
 
 <section id="tests">
   <h2>The test suite</h2>
-  <p><code>tests/run_all.sh</code> runs each target through the same cycle: record, checkpoint, restore, replay, compare with the live run. It has 26 tests. The last full run, on 2026-11-12, was two rounds on one machine: 24 tests passed both rounds. <code>files</code> failed one round because of the test itself (it kept its files where podman archives them after the dump), and passed 4 of 4 once that was fixed. Later that day the suite also ran with the restore and replay on a second machine: 25 of 26 in one round, and the one failure was a checkpoint error on the recording side (see the traps under <a href="#limits">Limits</a>), fixed since. Eight tests, including the signal tests, memcached and asyncio, then passed 3 of 3 across machines.</p>
+  <p><code>tests/run_all.sh</code> runs each target through the same cycle: record, checkpoint, restore, replay, compare with the live run. It has 28 tests. The last full run, on 2026-11-13, passed all 28. The ten that use threads or several processes also passed three rounds each; httpd needed an order search every time, and the pool with all workers woken at once in two of three. Across machines, the same ten passed 18 of 20 rounds: twice the search found no order that fits.</p>
   <div class="tablewrap"><table>
     <thead><tr><th>Group</th><th>Tests</th><th>Passes when</th></tr></thead>
     <tbody>
-      <tr><td>Small programs</td><td><code>basic</code>, <code>threads</code>, <code>fds</code>, <code>syscalls</code>, <code>fork</code>, <code>thread-new</code>, <code>exit</code>, <code>crash</code>, <code>net</code>, <code>files</code>, <code>reexec</code>, <code>self-signal</code>, <code>signal</code>, <code>signal-out</code></td><td>The replay prints the same lines as the live run.</td></tr>
+      <tr><td>Small programs</td><td><code>basic</code>, <code>threads</code>, <code>fds</code>, <code>syscalls</code>, <code>fork</code>, <code>thread-new</code>, <code>exit</code>, <code>crash</code>, <code>net</code>, <code>files</code>, <code>reexec</code>, <code>self-signal</code>, <code>signal</code>, <code>signal-out</code>, <code>procs+thr</code></td><td>The replay prints the same lines as the live run.</td></tr>
+      <tr><td>Threads sharing a queue</td><td><code>pool</code>, <code>pool-burst</code></td><td>The replay matches, if need be with an order found by <code>sysrr_search.sh</code>.</td></tr>
       <tr><td>Languages</td><td><code>python</code>, <code>asyncio</code>, <code>perl</code></td><td>The same.</td></tr>
-      <tr><td>Servers</td><td><code>redis</code>, <code>nginx</code>, <code>memcached</code></td><td>The restored server ends with the same data or logs as the live one.</td></tr>
-      <tr><td>Known limits</td><td><code>vdso-random</code>, <code>shell</code>, <code>pool</code>, <code>pool-burst</code>, <code>py-threads</code>, <code>py-procs</code></td><td>The replay matches, or it stops by itself and says what went wrong. A hang or a false pass is a failure.</td></tr>
+      <tr><td>Servers</td><td><code>redis</code>, <code>nginx</code>, <code>memcached</code>, <code>httpd</code></td><td>The restored server ends with the same data or logs as the live one.</td></tr>
+      <tr><td>Known limits</td><td><code>vdso-random</code>, <code>shell</code>, <code>py-threads</code>, <code>py-procs</code></td><td>The replay matches, or it stops by itself and says what went wrong. A hang or a false pass is a failure.</td></tr>
     </tbody>
   </table></div>
   <p>Eleven of these were added on 2026-11-12: <code>net</code>, <code>files</code>, <code>reexec</code>, <code>self-signal</code>, <code>pool</code>, <code>pool-burst</code>, <code>perl</code>, <code>asyncio</code>, <code>py-threads</code>, <code>py-procs</code> and <code>memcached</code>.</p>
@@ -403,7 +426,7 @@ td small { color: var(--muted); }
     <thead><tr><th>Not reproduced</th><th>Why</th><th>What you see</th></tr></thead>
     <tbody>
       <tr><td>A signal that lands in the middle of a computation; <code>SIGCHLD</code> from child processes</td><td>The log knows between which two syscalls a signal came, not at which instruction. Children are real processes and signal at their own time.</td><td>A divergence at the first value they changed. Shell scripts often hit this through <code>SIGCHLD</code>.</td></tr>
-      <tr><td>Threads taking the same lock within a few hundred nanoseconds</td><td>Who won is not in the log. <code>-T</code> works it out from the futex calls, which is usually right for thread pools and memcached.</td><td>A divergence at the first value that depended on it.</td></tr>
+      <tr><td>Threads touching the same memory at the same moment</td><td>Who was first is not in the log. <code>-T</code> guesses, and <code>sysrr_search.sh</code> tries the other guesses where a replay diverges.</td><td>A divergence, then usually an order that fits. Some recordings find none within 40 replays.</td></tr>
       <tr><td>Python threads</td><td>The interpreter lock changes hands on a 5 ms timer, with no syscall that says who got it.</td><td>A divergence, or “no progress” after 20 s.</td></tr>
       <tr><td><code>time()</code> and the coarse clocks</td><td>The vDSO answers them from a shared page, whatever the clock source, so they're never recorded.</td><td>The replay sees today's time. A divergence if it's printed. <code>clock_gettime</code> and <code>gettimeofday</code> are fine with <code>acpi_pm</code>.</td></tr>
       <tr><td>Races inside overlapping user code</td><td>Memory accesses make no syscall. <code>-T</code> runs the stretches one after another, which can pick the other winner.</td><td>A divergence if the result is later printed or sent. A crash can happen in only one of the two runs.</td></tr>
@@ -440,6 +463,7 @@ sudo ./sysrr_replay -p $(sudo podman inspect -f '{{.State.Pid}}' NEW) -g 1 rec.l
   -g N       generation to replay
   -S         syscalls start in recorded order
   -T         one thread runs at a time, in recorded order
+  -F SEQ,... with -T: another order at these records (from sysrr_search.sh)
   -e WHAT    at the end: stop, live or kill
   -w FILE    save what the target writes to stdout and stderr
   -c         only warn when data differs
@@ -450,6 +474,9 @@ sudo ./sysrr_replay -p $(sudo podman inspect -f '{{.State.Pid}}' NEW) -g 1 rec.l
 tests/run_all.sh                     <span class="dim"># everything, on this machine</span>
 tests/run_all.sh fork redis          <span class="dim"># some of them</span>
 ROUNDS=5 tests/run_all.sh fork       <span class="dim"># repeat, to catch flaky behaviour</span>
+
+<span class="dim"># threads diverged under -T: search for an order that fits the log</span>
+./sysrr_search.sh -i ckpt.tar.gz -g 1 rec.log
 REMOTE=claude-test SSH="ssh -i ~/.ssh/to-test" tests/run_all.sh   <span class="dim"># restore on another machine</span></pre>
 </section>
 

@@ -37,6 +37,10 @@
 #                                      in sc_known.txt
 #   KICK=USR1+TERM                     send the target these signals after the
 #                                      checkpoint, four times (podman kill)
+#   SEARCH=40                          with -T: if the replay diverges, look for an
+#                                      order of threads that fits the whole
+#                                      recording (sysrr_search.sh, at most 40
+#                                      replays) and compare the replay made with it
 #   CKPT_OPTS=--tcp-established        options for the checkpoint and the restore.
 #                                      Without this one CRIU refuses a checkpoint
 #                                      that lands while a TCP connection is open
@@ -56,6 +60,7 @@ ARGS=${ARGS:-}
 EXPECT=${EXPECT:-end}
 KEEP_GOING=${KEEP_GOING:-}
 KICK=${KICK:-}
+SEARCH=${SEARCH:-}
 CKPT_OPTS=${CKPT_OPTS:-}
 END_OPT="-e kill"
 OUT=${OUT:-/var/tmp/sysrr-replay}
@@ -139,7 +144,7 @@ sudo podman rm -f -t 0 $SRC >/dev/null
 
 if [ -n "$REMOTE" ]; then
 	echo "--- copy to $REMOTE: tests dir + sysrr_replay (same path), checkpoint, log"
-	tar -C .. -cf - sysrr_replay tests | $SSH "$REMOTE" "tar -C '$DIR/..' -xf -"
+	tar -C .. -cf - sysrr_replay sysrr_search.sh tests | $SSH "$REMOTE" "tar -C '$DIR/..' -xf -"
 	put "$OUT/ckpt.tar.gz"
 	put "$OUT/rec.log"
 	if ! $SSH "$REMOTE" "sudo podman image exists $IMG"; then
@@ -172,6 +177,26 @@ rc=0
 R "timeout 60 sudo ../sysrr_replay $REPLAY_OPTS -p $PID2 -g 1 $END_OPT -w '$OUT/replay_out.txt' '$OUT/rec.log'" \
 	| tee "$OUT/replay.txt" || rc=$?
 get "$OUT/replay_out.txt"
+FLIPS=
+if [ -n "$SEARCH" ] && [ "$SEARCH" != 0 ] && [ $rc = 1 ] && grep -q DIVERGENCE "$OUT/replay.txt"; then
+	# With -T, which thread went first where two overlapped is a guess: look
+	# for an order of threads that fits the whole recording (sysrr_search.sh)
+	echo "--- diverged: searching for an order of threads that fits the recording"
+	R "sudo podman rm -f -t 0 $DST >/dev/null 2>&1; ../sysrr_search.sh -n $SEARCH \
+	   -o '$(echo $REPLAY_OPTS | sed 's/-T//')' ${CKPT_OPTS:+-c '$CKPT_OPTS'} \
+	   -i '$OUT/ckpt.tar.gz' '$OUT/rec.log'" | tee "$OUT/search.txt" | tail -3 || true
+	FLIPS=$(sed -n 's/^FOUND -F \([0-9,]*\).*/\1/p' "$OUT/search.txt")
+	[ "$FLIPS" != none ] || FLIPS=
+	if grep -q '^FOUND' "$OUT/search.txt"; then
+		echo "--- replay again${FLIPS:+ with -F $FLIPS}"
+		PID2=$(restore_stopped $DST)
+		rc=0
+		R "timeout 60 sudo ../sysrr_replay $REPLAY_OPTS ${FLIPS:+-F $FLIPS} -p $PID2 -g 1 $END_OPT \
+		   -w '$OUT/replay_out.txt' '$OUT/rec.log'" >"$OUT/replay.txt" || rc=$?
+		tail -4 "$OUT/replay.txt"
+		get "$OUT/replay_out.txt"
+	fi
+fi
 
 echo "--- compare"
 n=$(wc -l <"$OUT/replay_out.txt")
@@ -220,7 +245,7 @@ else
 fi
 [ "$n" -gt 0 ] || { echo "FAIL: no output"; fail=1; }
 cmp -s "$OUT/live_tail.txt" "$OUT/replay_out.txt" || { echo "FAIL: output differs"; fail=1; }
-[ $fail = 0 ] && echo "PASS: $n lines reproduced on $WHERE, no divergence"
+[ $fail = 0 ] && echo "PASS: $n lines reproduced on $WHERE, no divergence${FLIPS:+ (order found by search: -F $FLIPS)}"
 R "sudo podman rm -f -t 0 $DST >/dev/null"
 
 case $TARGET in

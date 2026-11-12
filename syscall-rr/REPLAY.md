@@ -409,26 +409,110 @@ them from the REC_SIGNAL records; `-v` prints each delivery.
   handler, one not) 8 of 8, 121 lines. Both are suite tests now (`signal`,
   `signal-out`), must pass.
 
-## Processes and threads together (2026-11-12, unfinished)
+## Processes and threads together (2026-11-12/13)
 
 * `tests/mpmt_target.c` (2 worker processes x 3 threads, plus short-lived
   processes with threads; suite test `procs+thr`): 6 of 6 fresh runs after one
-  fix. The fix: "a stretch that ends waiting for a mutex goes behind the holder"
-  is now decided at replay time (`lock_free_yet`: read the lock word; move the
-  record back only if the lock is free). Statically it was wrong when the holder
-  keeps the lock across a syscall. Thread pool went from 5 of 8 to 5 of 6.
-* `tests/test_httpd.sh` (Apache 2.4 event MPM, 2 processes x threads, 8 clients;
-  compares which pid/tid served each request): **3 of 6**, so it is NOT in
-  run_all.sh. Fixes made on the way: allocator slack (an anonymous mmap or a
-  munmap may be extra or missing: `is_housekeeping`); a mapping is not forced
-  onto an occupied address; close/munmap/dup2 keep the place of their own return
-  in the -T order (they free a number or address another thread's next call may
-  be recorded with). Open failure types, not analysed yet: (1) file mmap fails
-  and httpd falls back to lseek+read ("expected writev, actual lseek"), probably
-  another real-call ordering case; (2) "no progress", a thread owing a read;
-  (3) "expected read, actual gettimeofday".
-* Not run after the last change (close/munmap ordering): the full suite. Before
-  it, the suite passed 27 of 28 (only httpd failed). Rerun before trusting.
+  fix: "a stretch that ends waiting for a mutex goes behind the holder" is
+  decided at replay time (`lock_free_yet`: read the lock word; move the record
+  back only if the lock is free). Statically it was wrong when the holder keeps
+  the lock across a syscall.
+* `tests/test_httpd.sh` (Apache 2.4 event MPM: 2 processes, each a listener
+  thread + workers; 8 keep-alive clients; compares which pid/tid served each
+  request). Without search: 3 of 6. With search and emulated waits (below):
+  3 of 3 fresh runs, each needing 1 or 2 flips. What the
+  failures taught, in order:
+  - **close/munmap/dup2 free a number or an address when they start**: a
+    `close(14)` that entered before another thread's `openat` got 14 but
+    returned after it was ordered after the open, so the open found 14 taken
+    ("fd 14 is already open ... replacing it") and the real close then closed
+    the new file. These calls now take their place in the -T order by their
+    start (`frees`, `release_time`), like clone and execve.
+  - **allocator slack**: an anonymous mmap or a munmap may be extra or missing
+    (`is_housekeeping`); a mapping is not forced onto an occupied address.
+  - **asleep in a wait the recording lacks** (`asleep`, in `next_exit_is`):
+    a worker reached the job queue before the listener had filled it and waits
+    on the condition. The others now go on in recorded order without it; when
+    it is woken its record is the earliest left. Replaced a 2 s stall followed
+    by a blind guess. The wait itself is emulated, not run (see "Order search").
+  - **a wrong file descriptor is a divergence** (`fd_args`): "read arg0 is 0xe,
+    recorded 0xf" means the thread is serving another connection. It used to be
+    a warning, and the visible divergence came ~200 records later in another
+    thread, where nothing could explain it.
+  - **epoll causality** (`find_deps`, `dep_waiting`): an epoll_wait result is
+    not given before the epoll_ctl ADD/MOD (another thread's) that armed each
+    returned event. Needed a recorder change: **epoll_ctl's event argument was
+    never recorded** (now `IN(3, a[3], 12)` except for DEL), so the replay also
+    never checked the data pointer a connection was armed with. Without it the
+    listener got an event for a connection a worker still held: httpd logged
+    "event_loop: unexpected state 1" and aborted. Older logs lack the data, so
+    the dependency only works on recordings made after 2026-11-13.
+  - **the order of overlapping stretches** is a real ambiguity, not a bug:
+    httpd's listener decides from counters the workers update in shared memory
+    (idle workers), and which of two overlapping stretches touched them first is
+    not in the log. Neither "by start" nor "by end" is right every time. Hence
+    the search.
+* How these were found (keep): restore a saved recording again and again
+  (deterministic); `/proc/PID/task/TID/syscall` gives the stack pointer of a
+  thread parked at its divergence (replay with `-e stop`), scanning its stack
+  for return addresses and `llvm-symbolizer --obj=/proc/PID/root/<lib>` names
+  the code path without gdb; letting the diverged copy go on (`-e live`) makes
+  the program itself say what it found wrong (httpd's error log).
+
+## Order search: sysrr_search.sh, -F (2026-11-13)
+
+With -T, every record stands for the stretch of user code after it, and each
+stretch takes its place in the order by its end (default) or start. Where two
+stretches overlapped live, that place is a guess. `-F SEQ,...` flips the guess
+for the given records (start <-> end; `key_start`, `key_end`). On a divergence,
+sysrr_replay prints `SEARCH progress: N`, `SEARCH at: SEQ` (the record that
+diverged) and `SEARCH candidates: ...`: the diverging thread's last four
+stretches, each followed by the eight stretches of other threads that
+overlapped it, nearest first.
+
+`sysrr_search.sh -i ckpt.tar.gz [-g N] [-n TRIES] [-o opts] [-c restore-opts]
+[-k] rec.log` restores the checkpoint and replays with -T, flipping one
+candidate at a time; a flip is kept only if the replay gets past the record
+that diverged (counting progress alone accepted flips that let a few unrelated
+records through and fixed nothing). If no single flip helps it tries pairs of
+the six strongest candidates. Prints `FOUND -F ...` or `BEST -F ...`. Each
+attempt is a restore + replay to the divergence: about a second for small
+targets, a few for httpd.
+
+**The search needs replays to be repeatable, and at first they were not**: the
+same log and flips gave a divergence in one replay and the end in the next.
+The source: a futex wait the recording lacks ran for real, and the kernel woke
+the thread whenever another thread's wake reached it, so it ran user code next
+to the thread whose turn it was. Under -T such waits are now **emulated**
+(`hold_wait`): EAGAIN if the futex word already differs, as the kernel would;
+else the thread is held. Every wake passes through the replayer (`note_wake`:
+WAKE, WAKE_BITSET, WAKE_OP, REQUEUE) and marks held waiters on its address; a
+woken one is answered at its turn in the order (`release_woken`). When nothing
+else can move, one held wait is answered without a wake (spurious wake-ups are
+allowed for futex; ETIMEDOUT for a timed wait). With `-e live` held waits go to
+the kernel at the end. After this, three replays of the same recording gave the
+same result every time (pool, pool-burst, httpd).
+
+An order it finds is consistent with the whole log, but not necessarily the
+live one: the log cannot tell them apart. The flips name the places where the
+program's behaviour depended on which thread came first: for race hunting, that
+list is a result in itself.
+
+test_replay.sh (`SEARCH=40`) and test_httpd.sh (default 40, `SEARCH=0` off)
+search when the replay diverges and compare the replay made with the order
+found. Results (same machine, 2026-11-13, after the emulated waits):
+three rounds each of threads, pool, pool-burst, procs+thr, redis, memcached,
+nginx, httpd: all passed. pool-burst needed a search in 2 of 3 (1 to 3 flips),
+httpd in 3 of 3 (1 to 2 flips, a few seconds per replay); the rest none.
+py-threads and py-procs still end in an honest divergence report. Then the
+whole suite (28 tests) passed in one round.
+Across machines (restore + replay + search on claude-test), two rounds of the
+same ten: 18 of 20 rounds passed. pool failed 1 of 2 and procs+thr 1 of 2: the
+search ran out of candidates (15 and 23 replays, no single flip or pair got past
+the divergence). So a search can still miss: the right flip is outside the
+candidate window, or more than two flips are needed at one point.
+Earlier saved recordings: pool-burst 6 of 6 found (5 to 28 replays); httpd
+recordings made before the wait emulation: 4 of 6 found within 40 replays.
 
 ## Replay limitations (tell the user when relevant)
 
@@ -457,10 +541,11 @@ them from the REC_SIGNAL records; `-v` prints each delivery.
   syscall or reading /dev/urandom is fine. No per-process way to turn the vDSO
   off; booting the record machine with `vdso=0` would turn it into syscalls
   (clock too), not tried. tests/rand_target.c.
-* Who won a contended lock is not in the log. `-T` infers it from the futex calls
-  (2026-11-12) and gets thread pools and memcached through most of the time; two
-  lock releases within the same few hundred nanoseconds can still come out the
-  other way. Python threads (GIL, handed over on a 5 ms timer): followed for a
+* Who won a contended lock, and which of two overlapping stretches of user code
+  touched shared memory first, is not in the log. `-T` guesses from the futex
+  calls and the stretch ends; `sysrr_search.sh` tries the other guesses where a
+  replay diverges (2026-11-13), which gets thread pools and httpd through most of
+  the time. Some recordings still find no order within 40 replays. Python threads (GIL, handed over on a 5 ms timer): followed for a
   few dozen calls, then "no progress" after 20 s or a divergence.
 * `time()` and the `*_COARSE` clocks come from the vDSO data page even with
   acpi_pm: not recorded, the replay sees the real time.
@@ -549,6 +634,10 @@ before the container is removed. Fix: `CKPT_OPTS=--tcp-established`
 option together with `--name`, so the copy keeps the original's name. Used by
 `net`, `perl`, `asyncio`. This probably explains the old "unconfirmed -52" too
 where TCP was involved; the `python` test has no TCP, so its -52 is still open.
+
+2026-11-13: 28 tests (added procs+thr, httpd; pool and pool-burst must now
+pass, with `SEARCH=40`). One full round: 28 of 28. Thread tests three rounds:
+all pass (see "Order search").
 
 2026-11-12, after signal replay: 26 tests (`signal` must now pass; `signal-out`
 added). One round: 25 passed, `asyncio` hit the known `CRIU checkpointing failed

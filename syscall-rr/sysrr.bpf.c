@@ -384,6 +384,9 @@ static __always_inline int capture_enter(s64 nr, u64 *a, u64 seq, u32 tid, u32 x
 	case __NR_bind:             IN(1, a[1], a[2] & 0xff); break;
 	case __NR_nanosleep:        IN(0, a[0], SZ_TIMESPEC); break;
 	case __NR_clock_nanosleep:  IN(2, a[2], SZ_TIMESPEC); break;
+	/* what an fd is armed for, and the data its events will carry back (often a
+	 * pointer): the replay checks it, and ties each recorded event to its ADD */
+	case __NR_epoll_ctl:        if (a[1] != 2 /* DEL */ && a[3]) IN(3, a[3], 12); break;
 
 	/* in/out */
 	case __NR_poll:

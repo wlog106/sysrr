@@ -46,6 +46,7 @@ test targets in `tests/`:
 | `sysrr` | records a process's syscalls into a log |
 | `sysrr_dump` | prints a log in readable form |
 | `sysrr_replay` | replays a log into a restored process |
+| `sysrr_search.sh` | when a replay of threads diverges, searches for an order of threads that fits the whole log |
 | `raw_sysrr` | bare recorder, used only to measure overhead |
 
 If bpftool isn't in `/usr/sbin`, run `make BPFTOOL=$(which bpftool)`.
@@ -108,6 +109,19 @@ sudo ./sysrr_replay -p $(sudo podman inspect -f '{{.State.Pid}}' NEW) -g 1 rec.l
 `sysrr_replay` prints each syscall it answers. It reports "diverged" as soon
 as the restored process asks for something different from the recording.
 
+With threads, the log doesn't always say which of two threads touched shared
+memory first, and `-T` has to guess. If a replay with `-T` diverges, let
+`sysrr_search.sh` try the other guesses (it restores the checkpoint again for
+each attempt):
+
+```
+./sysrr_search.sh -i ckpt.tar.gz -g 1 rec.log      # prints e.g. FOUND -F 4104,4174
+sudo ./sysrr_replay -T -F 4104,4174 -p PID -g 1 rec.log
+```
+
+The flips it needed mark the places where the program depended on which
+thread came first.
+
 Useful options:
 
 | option | meaning |
@@ -115,6 +129,7 @@ Useful options:
 | `-g N` | which generation to replay (match the checkpoint you restored) |
 | `-S` | keep the recorded order of syscalls across threads |
 | `-T` | run threads one at a time in recorded order (use this when threads share memory or locks) |
+| `-F SEQ,...` | with `-T`: use another order at these records (what `sysrr_search.sh` finds) |
 | `-e stop\|live\|kill` | what to do at the end of the log: stop the process (default), let it go on for real, or kill it |
 | `-w FILE` | save what the process writes to stdout/stderr (those writes are faked during replay) |
 | `-c` | keep going when a syscall's input differs from the recording |

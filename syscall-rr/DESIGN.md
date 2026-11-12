@@ -435,6 +435,25 @@ More rules make `-T` work for programs built on locks (2026-11-12):
   is held, not run: run for real it would take the wake-up meant for a
   thread whose recorded wait is being answered.
 
+Added 2026-11-13 (httpd, a server with several processes of several threads):
+
+* **Calls that free a number or an address** (close, close_range, munmap,
+  dup2, dup3) take their place by their start: the number is free as soon as
+  they start, and another thread's open may be recorded with it.
+* **A thread asleep in a wait the recording lacks** is not waited for: the
+  others go on in recorded order until one wakes it. The wait is emulated by
+  the replayer (held; marked woken by any wake on its address that passes
+  through; answered at its turn), never run in the kernel, where a wake-up
+  would let it run next to the thread whose turn it is and make replays of the
+  same log differ.
+* **Facts beat guesses**: an epoll_wait is not answered before the epoll_ctl
+  ADD/MOD (another thread's) that armed each event it returns.
+* **A wrong file descriptor is a divergence**, not a warning.
+* **The order is searched** where it is a guess: `-F` flips the place of given
+  stretches (start <-> end); `sysrr_search.sh` restores and replays with one
+  flip at a time, keeping flips that get the replay past the record that
+  diverged, until it reaches the end. REPLAY.md, "Order search".
+
 ### Threads with nothing recorded
 
 A thread blocked in one syscall for the whole generation (redis's

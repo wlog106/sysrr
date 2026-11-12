@@ -36,16 +36,17 @@ TESTS=(
 "files      |a file tree made and removed, big reads, listings |TARGET=file_target test_replay.sh"
 "reexec     |the program replaces itself with execve           |TARGET=reexec_target test_replay.sh"
 "self-signal|signals it sends itself: raise, SIGPIPE, SIGSEGV  |TARGET=sigsync_target test_replay.sh"
-"pool       |thread pool, jobs one by one: mutex and condvar   |TARGET=pool_target REPLAY_OPTS=-T EXPECT=honest test_replay.sh"
-"pool-burst |thread pool, four workers woken at once           |TARGET=pool_target ARGS=burst REPLAY_OPTS=-T EXPECT=honest test_replay.sh"
+"pool       |thread pool, jobs one by one: mutex and condvar   |TARGET=pool_target REPLAY_OPTS=-T SEARCH=40 test_replay.sh"
+"pool-burst |thread pool, four workers woken at once           |TARGET=pool_target ARGS=burst REPLAY_OPTS=-T SEARCH=40 test_replay.sh"
 "perl       |Perl: fork, pipe, files, a socket to itself       |TARGET=perl_target.pl CKPT_OPTS=--tcp-established SYSRR_OPTS=-f REPLAY_OPTS=-T test_replay.sh"
 "asyncio    |Python asyncio: one epoll loop, many connections  |TARGET=py_async_target.py IMG=$PY CKPT_OPTS=--tcp-established SYSRR_OPTS=-f REPLAY_OPTS=-T test_replay.sh"
 "py-threads |Python threads and the GIL                        |TARGET=py_threads_target.py IMG=$PY REPLAY_OPTS=-T EXPECT=honest test_replay.sh"
 "py-procs   |Python multiprocessing: locks between processes   |TARGET=py_mp_target.py IMG=$PY SYSRR_OPTS=-f REPLAY_OPTS=-T EXPECT=honest test_replay.sh"
-"procs+thr  |2 processes x 3 threads, and new ones with threads|TARGET=mpmt_target SYSRR_OPTS=-f REPLAY_OPTS=-T test_replay.sh"
+"procs+thr  |2 processes x 3 threads, and new ones with threads|TARGET=mpmt_target SYSRR_OPTS=-f REPLAY_OPTS=-T SEARCH=40 test_replay.sh"
 "redis      |real server: dataset digest identical             |test_redis.sh"
 "memcached  |real server, 4 worker threads: dataset identical  |test_memcached.sh"
 "nginx      |real server, 3 processes: logs identical          |test_nginx.sh"
+"httpd      |real server, processes x threads: same thread each|test_httpd.sh"
 )
 
 selected() {
@@ -66,7 +67,7 @@ for t in "${TESTS[@]}"; do
 		read -r -a words <<<"$cmd"
 		script=./${words[-1]}
 		unset 'words[-1]'
-		if timeout 300 env "${words[@]}" "$script" >"$log" 2>&1; then
+		if timeout 900 env "${words[@]}" "$script" >"$log" 2>&1; then
 			pass=$((pass + 1))
 		else
 			failures+=("$log")
