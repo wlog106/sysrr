@@ -35,6 +35,8 @@
 #   KEEP_GOING=1                       sc_target: run through every mismatch; pass
 #                                      if the lines that differ are all listed
 #                                      in sc_known.txt
+#   KICK=USR1+TERM                     send the target these signals after the
+#                                      checkpoint, four times (podman kill)
 #   IMG=docker.io/library/python:3.12-slim   another image
 #
 # The clocksource is switched to acpi_pm for the run, on both machines, so
@@ -49,6 +51,7 @@ SYSRR_OPTS=${SYSRR_OPTS:-}
 ARGS=${ARGS:-}
 EXPECT=${EXPECT:-end}
 KEEP_GOING=${KEEP_GOING:-}
+KICK=${KICK:-}
 END_OPT="-e kill"
 OUT=${OUT:-/var/tmp/sysrr-replay}
 REMOTE=${REMOTE:-}
@@ -100,6 +103,11 @@ PID=$(sudo podman inspect -f '{{.State.Pid}}' $SRC)
 sudo ../sysrr $SYSRR_OPTS -p "$PID" -o "$OUT/rec.log" 2>"$OUT/sysrr.err" &
 sleep 2
 sudo podman container checkpoint --leave-running -e "$OUT/ckpt.tar.gz" $SRC >/dev/null
+if [ -n "$KICK" ]; then         # signals from outside, while generation 1 is recorded
+	for i in 1 2 3 4; do
+		for sig in ${KICK//+/ }; do sudo podman kill -s "$sig" $SRC >/dev/null 2>&1 || true; done
+	done
+fi
 sleep 2
 sudo podman pause $SRC >/dev/null 2>&1 || true   # freeze A: its log now ends where the recording ends
                                             # (exit_target has already ended by itself)

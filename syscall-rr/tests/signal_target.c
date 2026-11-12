@@ -1,7 +1,8 @@
-/* A timer signal interrupts the program; its handler changes what the program
- * prints.  Signals are not replayed (REPLAY.md, limitations), so this replay
- * cannot succeed.  What this target checks is how it fails: the supervisor
- * must report a divergence, not hang and not claim success.
+/* A timer signal interrupts the program 30 times a second; its handler changes
+ * what the program prints.  The replay disarms the restored timer and delivers
+ * each recorded signal at the syscall it interrupted (REPLAY.md, "Signals from
+ * the log").  Until 2026-11-12 signals were not replayed and this target could
+ * only check that the failure was reported.
  */
 #include <signal.h>
 #include <stdio.h>

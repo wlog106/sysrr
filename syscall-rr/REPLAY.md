@@ -364,6 +364,51 @@ again after each change (a replay of the same log is deterministic now), and
 compare with the old binary on the same recording. Rebuilding a target binary
 invalidates saved checkpoints (CRIU checks the file: restore fails -52).
 
+## Signals from the log (2026-11-12, later the same day)
+
+The user asked to replay signals. Now replayed: handled signals from a **timer**
+(alarm, setitimer, timer_create: si_code SI_KERNEL or SI_TIMER) and from
+**outside** the recorded processes (podman kill, a shell). `plan_signals` picks
+them from the REC_SIGNAL records; `-v` prints each delivery.
+
+* **Where**: the last syscall record of the thread with seq below the signal's.
+  - That call was interrupted (ret -512..-516, skipped at load): when the thread
+    makes the call, seize + interrupt as for SIGPIPE, put the *recorded* restart
+    code in rax, leave orig_rax alone, tgkill, detach. The kernel's own restart
+    logic then does what it did live (restart after the handler with SA_RESTART,
+    EINTR otherwise).
+  - That call completed: the signal goes out with its answer
+    (`return_with_signals`, several signals at once if needed). If the call ran
+    for real or created fds, the signal is sent just after the answer.
+  - It hangs on a timing-only record the replay does not make: delivered before
+    the call the thread makes instead (rax -513, always restart).
+* **Timers are disarmed at attach** (`attach_listener`: setitimer x3 and
+  timer_settime for every id in /proc/PID/timers, injected before the filter).
+  A restored timer runs in real time; the program lives in recorded time. Calls
+  that arm timers later are faked anyway. With `-e live` the timers stay off.
+* **Pending instances are drained at attach** (injected rt_sigtimedwait with a
+  zero timeout over the planned signal numbers): a timer that ran out while the
+  copy sat stopped would add one delivery.
+* **A signal pending at the checkpoint is in the image.** The restore delivers
+  it, and the copy wakes up inside the handler; the recorder logged the same
+  delivery at the start of the generation. A recorded signal from before the
+  thread's first syscall is therefore skipped when that signal is blocked at the
+  thread's first notification (it is inside the handler). Found the hard way:
+  one tick too many.
+* Not replayed this way, on purpose: signals a recorded thread sent (matched to
+  the latest kill-family record with that number; the kill runs for real),
+  SIGCHLD (real children send it, at their own time: shell scripts still drift),
+  SIGPIPE (sent with the EPIPE), faults, and fatal signals (end of recording).
+* Approximate case: a signal that arrived while the thread was computing, not in
+  a syscall, is delivered at the previous syscall: early by that computation.
+  Counted in the totals ("arrived while the thread was computing"). A handler
+  that only sets a flag is fine; one whose effect depends on how far the loop
+  got is not. The delivered siginfo says SI_TKILL, not the original code.
+* Results: signal_target (30 ms itimer, SA_RESTART) 71 of 71 signals, 211 of 211
+  lines, 3 of 3 runs; sigext_target (podman kill USR1 and TERM, one restarting
+  handler, one not) 8 of 8, 121 lines. Both are suite tests now (`signal`,
+  `signal-out`), must pass.
+
 ## Replay limitations (tell the user when relevant)
 
 * CONTINUE'd syscalls: their return value can't be checked (seccomp never
@@ -398,8 +443,8 @@ invalidates saved checkpoints (CRIU checks the file: restore fails -52).
   few dozen calls, then "no progress" after 20 s or a divergence.
 * `time()` and the `*_COARSE` clocks come from the vDSO data page even with
   acpi_pm: not recorded, the replay sees the real time.
-* Signals from a timer or from outside are still not replayed (SIGPIPE and
-  signals a program sends itself are).
+* Signals: see "Signals from the log". Left: SIGCHLD timing, signals that land
+  in the middle of a computation (delivered early), original siginfo.
 * A file received over a socket (SCM_RIGHTS): only the number is recorded, the
   stand-in is /dev/null, a real mmap of it fails (sc_known.txt).
 * semctl(GETALL): output not recorded (sc_known.txt).
@@ -458,6 +503,13 @@ Last full suite: 14 of 14, 2 rounds, both machines (2026-11-06). See the guide's
   ssh never returns. Watch long runs with a Monitor: a hang here cost 90 minutes.
 
 ## Test suite (2026-11-06): tests/run_all.sh
+
+2026-11-12, after signal replay: 26 tests (`signal` must now pass; `signal-out`
+added). One round: 25 passed, `asyncio` hit the known `CRIU checkpointing failed
+-52` before any replay and then passed 3 of 3; `signal`, `signal-out`,
+`self-signal` 3 of 3. Crash catalogue, one round: as before (differs: race-memory,
+pbzip2, go-panic; redis same-fault then divergence; `alarm` same-signal with the
+same exit code 142).
 
 2026-11-12: 25 tests. Two rounds here: 24 passed both; `files` failed one round
 because the target kept its tree in /dev/shm, which podman archives after the

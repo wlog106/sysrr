@@ -150,10 +150,11 @@ works). Rows whose binary is missing fail.
 - vDSO calls (`clock_gettime`, glibc's `getrandom`) don't enter the kernel, so
   they aren't recorded. The `acpi_pm` clock source forces clock calls through
   a real syscall on both machines.
-- Signals a program sends itself (`raise`, a write to a closed pipe, a bad
-  pointer) are replayed. Signals that arrive from outside or from a timer
-  can't be replayed yet: `sysrr_replay` reports a divergence instead of
-  hanging.
+- Signals are replayed: the ones a program sends itself, timer signals and
+  signals sent from outside. A signal that interrupted a syscall comes back at
+  exactly that syscall. One that arrived in the middle of a computation comes
+  back at the thread's previous syscall, which is a little early. `SIGCHLD`
+  from child processes still arrives at its own time.
 - Threads that take the same lock within a few hundred nanoseconds of each
   other can't always be put back in order: the log only has syscalls. `-T`
   gets most programs through; when it can't, `sysrr_replay` says so.

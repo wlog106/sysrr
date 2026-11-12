@@ -112,6 +112,8 @@ static FILE *wfile;
 #define SECCOMP_FILTER_FLAG_TSYNC_ESRCH (1UL << 4)
 #endif
 
+static unsigned long long planned_sigs;     /* mask of signal numbers the log will deliver */
+
 static long xptrace(int req, pid_t pid, void *addr, void *data)
 {
 	long r;
@@ -216,6 +218,33 @@ static int attach_listener(pid_t pid)
 	long r = inject(pid, &saved, SYS_prctl, PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0, -1);
 	if (r)
 		die("injected prctl(NO_NEW_PRIVS) failed: %s", strerror(-r));
+	/* Timers the checkpoint restored would fire in real time, while the replay
+	 * gives the program recorded time: their signals come from the log instead
+	 * (plan_signals).  The page is zero past the filter: a zero itimerval or
+	 * itimerspec disarms. */
+	for (int which = 0; which < 3; which++)
+		inject(pid, &saved, SYS_setitimer, which, page + 1024, 0, 0, 0, -1);
+	char tpath[64], tline[128];
+	snprintf(tpath, sizeof(tpath), "/proc/%d/timers", pid);
+	FILE *tf = fopen(tpath, "r");
+	while (tf && fgets(tline, sizeof(tline), tf)) {
+		int id;
+		if (sscanf(tline, "ID: %d", &id) == 1)
+			inject(pid, &saved, SYS_timer_settime, id, 0, page + 1024, 0, 0, -1);
+	}
+	if (tf)
+		fclose(tf);
+	/* An instance of such a signal that is already pending (it was pending at
+	 * the checkpoint, or a timer ran out while the copy sat stopped) would be
+	 * delivered on top of the recorded one: take it out. */
+	if (planned_sigs) {
+		struct iovec ml = { &planned_sigs, 8 }, mr = { (void *)(page + 2048), 8 };
+		process_vm_writev(pid, &ml, 1, &mr, 1, 0);
+		for (int i = 0; i < 64; i++)
+			if (inject(pid, &saved, SYS_rt_sigtimedwait, page + 2048, 0, page + 1024, 8, 0, -1) <= 0)
+				break;
+	}
+
 	fd = inject(pid, &saved, SYS_seccomp, SECCOMP_SET_MODE_FILTER,
 		    SECCOMP_FILTER_FLAG_NEW_LISTENER | SECCOMP_FILTER_FLAG_TSYNC |
 		    SECCOMP_FILTER_FLAG_TSYNC_ESRCH, page, 0, 0, -1);
@@ -250,6 +279,8 @@ struct ent {                        /* one recorded syscall */
 	unsigned done;
 	u64 key;                    /* -T: its place in the serial order */
 	u64 enter;                  /* -T: ts_enter, made to agree with seq */
+	const struct rec_signal *sig[4];   /* signals the thread got right after this call */
+	unsigned char nsig, sig_done, kill_used;
 };
 
 struct thr {                        /* one recorded thread */
@@ -265,6 +296,8 @@ struct thr {                        /* one recorded thread */
 	int past_end;               /* asked for a syscall after its last record */
 	int lock_wait;              /* -T: sleeps in a real futex wait the recording lacks */
 	u64 wait_addr;              /* ... on this futex */
+	const struct rec_signal *startsig[4];  /* signals it got before its first call */
+	int nstart;
 	pid_t start_tid;            /* -T: held in a ptrace stop until its turn to start */
 	u64 start_key;              /* ... which is when it made its first syscall */
 };
@@ -318,6 +351,74 @@ static const struct sysrr_file_hdr *fh;
 /* the live run's signals in this generation */
 static const struct rec_signal **sigs;
 static size_t nsigs;
+
+/* --- signals from the log ----------------------------------------------------
+ *
+ * A signal the program handled is replayed if the replay cannot produce it:
+ *   - from a timer (alarm, setitimer, timer_create): the calls that arm timers are
+ *     faked and restored timers are disarmed, so no real timer runs;
+ *   - sent by something outside the recorded processes (podman kill, a shell).
+ * Not replayed here: a signal one of the recorded threads sent (its kill runs for
+ * real and sends it again), SIGCHLD (the children are real and send it), SIGPIPE
+ * (sent with the EPIPE that causes it), faults (the instruction faults again) and
+ * signals that killed the program (delivered at the end of the recording).
+ *
+ * Where: the log says which of the thread's syscalls came last before the signal.
+ * The signal is delivered as that call returns.  If the signal interrupted the
+ * call this is exact.  If it arrived while the thread was computing, it comes
+ * early by the length of that computation (counted, and said in the totals). */
+static unsigned long n_sigplan, n_sigloose, n_sigdone;
+
+static int sig_of_kill(const struct rec_syscall *r)
+{
+	switch (r->nr) {
+	case SYS_kill: case SYS_tkill: case SYS_rt_sigqueueinfo: case SYS_pidfd_send_signal:
+		return r->args[1];
+	case SYS_tgkill: case SYS_rt_tgsigqueueinfo:
+		return r->args[2];
+	}
+	return 0;
+}
+
+static void plan_signals(void)
+{
+	for (size_t i = 0; i < nsigs; i++) {
+		const struct rec_signal *g = sigs[i];
+		struct thr *t = thr_of(g->ns_tid);
+		struct ent *at = NULL, *by = NULL;
+
+		if (g->sig == SIG_EXIT || g->fatal || !g->handler || !t || g->sig == SIGCHLD ||
+		    g->sig == SIGPIPE || (g->code > 0 && g->code != 0x80))
+			continue;
+		if (g->code == 0 /* SI_USER */ || g->code == -6 /* SI_TKILL */ || g->code == -1 /* SI_QUEUE */) {
+			/* sent by a recorded thread?  The latest matching kill before it. */
+			for (size_t j = 0; j < nents && ents[j].s->h.seq < g->h.seq; j++)
+				if (!ents[j].kill_used && ents[j].s->ret == 0 &&
+				    sig_of_kill(ents[j].s) == g->sig)
+					by = &ents[j];
+			if (by) {
+				by->kill_used = 1;
+				continue;
+			}
+		} else if (g->code != 0x80 /* SI_KERNEL */ && g->code != -2 /* SI_TIMER */) {
+			continue;
+		}
+		for (size_t j = 0; j < t->n && t->q[j]->s->h.seq < g->h.seq; j++)
+			at = t->q[j];
+		n_sigplan++;
+		planned_sigs |= 1ULL << (g->sig - 1);
+		if (!at || (at->done && !is_restart_ret(at->s->ret))) {
+			if (t->nstart < 4)
+				t->startsig[t->nstart++] = g;
+			continue;
+		}
+		if (at->nsig < 4)
+			at->sig[at->nsig++] = g;
+		if (!is_restart_ret(at->s->ret) && at->s->ret != -EINTR &&
+		    g->ts > at->s->ts_exit + 20000)
+			n_sigloose++;
+	}
+}
 
 static void load(const char *path, int *gen)
 {
@@ -420,6 +521,7 @@ static void load(const char *path, int *gen)
 	if (flagged)
 		fprintf(stderr, "warning: %d syscalls of this generation have "
 			"incomplete data (F_TRUNC/F_FAULT/F_LOST)\n", flagged);
+	plan_signals();
 }
 
 /* ======================================================================
@@ -480,8 +582,8 @@ static int futex_waits(u64 op)
 	return op == 0 /* WAIT */ || op == 9 /* WAIT_BITSET */;
 }
 
-/* is signal sig waiting for this thread (sent to it or to its process)? */
-static int sig_pending(pid_t tid, int sig)
+/* is sig in one of the thread's signal masks in /proc/TID/status? */
+static int sig_in_mask(pid_t tid, const char *field, int sig)
 {
 	char path[64], line[256];
 	int yes = 0;
@@ -493,10 +595,16 @@ static int sig_pending(pid_t tid, int sig)
 	if (!f)
 		return 0;
 	while (fgets(line, sizeof(line), f))
-		if (!strncmp(line, "SigPnd:", 7) || !strncmp(line, "ShdPnd:", 7))
+		if (!strncmp(line, field, 7))
 			yes |= (int)(strtoull(line + 7, NULL, 16) >> (sig - 1)) & 1;
 	fclose(f);
 	return yes;
+}
+
+/* is signal sig waiting for this thread (sent to it or to its process)? */
+static int sig_pending(pid_t tid, int sig)
+{
+	return sig_in_mask(tid, "SigPnd:", sig) || sig_in_mask(tid, "ShdPnd:", sig);
 }
 
 static int fd_is(pid_t pid, u64 fd, const char *what)
@@ -969,9 +1077,9 @@ static void report_live_end(void)
 
 	for (size_t i = 0; i < nsigs; i++)
 		handled += sigs[i]->sig != SIG_EXIT && !sigs[i]->fatal;
-	if (handled)
-		printf("   the live run received %lu signal(s) that did not kill it; arbitrary signals "
-		       "are not replayed\n", handled);
+	if (handled > n_sigplan)
+		printf("   the live run handled %lu other signal(s): sent by itself or by its "
+		       "children, which the replay sends for real\n", handled - n_sigplan);
 	if (!d)
 		return;
 	if (d->sig == SIG_EXIT) {
@@ -1008,6 +1116,12 @@ static void print_totals(void)
 		       "heap is laid out differently)\n", n_ptrdiff);
 	if (n_jump)
 		printf("   %lu time(s) a thread went ahead of one that was waiting for its lock\n", n_jump);
+	if (n_sigplan)
+		printf("   signals from a timer or from outside: %lu recorded, %lu delivered%s\n",
+		       n_sigplan, n_sigdone, n_sigdone < n_sigplan ? " (the rest: their place was not reached)" : "");
+	if (n_sigloose)
+		printf("   %lu of them arrived while the thread was computing, not in a syscall: "
+		       "delivered at its previous syscall, so earlier than live\n", n_sigloose);
 	if (n_sig)
 		printf("   SIGPIPE delivered with a failed write %lu time(s)\n", n_sig);
 	fflush(stdout);
@@ -1702,7 +1816,10 @@ static int sends_sigpipe(const struct seccomp_notif *req)
 	return 0;
 }
 
-static int return_with_signal(const struct seccomp_notif *req, s64 ret, int sig)
+/* restart: leave the call in place (rax says how the kernel restarts it after
+ * the handler); otherwise the call is over and returned ret. */
+static int return_with_signals(const struct seccomp_notif *req, s64 ret, int restart,
+			       const int *sig, int n)
 {
 	pid_t tid = req->pid;
 	struct user_regs_struct r;
@@ -1725,10 +1842,33 @@ static int return_with_signal(const struct seccomp_notif *req, s64 ret, int sig)
 		return -1;
 	}
 	r.rax = ret;
-	r.orig_rax = -1;                /* not a syscall any more: nothing to restart */
+	if (!restart)
+		r.orig_rax = -1;        /* not a syscall any more: nothing to restart */
 	ptrace(PTRACE_SETREGS, tid, 0, &r);
-	syscall(SYS_tgkill, tgid_of(tid), tid, sig);
+	for (int i = 0; i < n; i++)
+		syscall(SYS_tgkill, tgid_of(tid), tid, sig[i]);
 	ptrace(PTRACE_DETACH, tid, 0, 0);
+	return 0;
+}
+
+/* Deliver recorded signals to a thread parked at a call it will make again once
+ * the handlers have run.  how: the kernel's own restart code as recorded
+ * (-512 restart if the handler allows, -514/-516 fail with EINTR), or -513
+ * (always restart) when the signals do not belong to this call. */
+static int signals_then_again(const struct seccomp_notif *req, s64 how,
+			      const struct rec_signal *const *g, int n)
+{
+	int nums[4];
+
+	for (int i = 0; i < n; i++)
+		nums[i] = g[i]->sig;
+	if (return_with_signals(req, how, 1, nums, n))
+		return -1;
+	n_sigdone += n;
+	if (opt_verbose)
+		for (int i = 0; i < n; i++)
+			printf("         %-5u signal %d (%s) delivered, as recorded, before its %s\n",
+			       ns_tid_of(req->pid), nums[i], strsignal(nums[i]), sysname(req->data.nr));
 	return 0;
 }
 
@@ -2058,6 +2198,31 @@ static int handle(struct seccomp_notif *req)
 		return 1;
 	}
 
+	if (t->nstart) {                        /* signals from before its first call */
+		/* One that was pending at the checkpoint is in the image: the restore
+		 * delivered it, and the thread woke up inside its handler (where the
+		 * signal is blocked).  Only the others are ours to deliver. */
+		const struct rec_signal *g[4];
+		int n = 0;
+		for (int i = 0; i < t->nstart; i++)
+			if (sig_in_mask(req->pid, "SigBlk:", t->startsig[i]->sig))
+				n_sigdone++;
+			else
+				g[n++] = t->startsig[i];
+		t->nstart = 0;
+		if (n && signals_then_again(req, -513, g, n) == 0)
+			return 1;
+	}
+	/* a recorded signal interrupted this very call: the same here */
+	for (size_t j = t->pos; j < t->n && t->q[j]->done; j++) {
+		struct ent *k = t->q[j];
+		if (!k->nsig || k->sig_done || !is_restart_ret(k->s->ret) ||
+		    (long)k->s->nr != req->data.nr)
+			continue;
+		k->sig_done = 1;
+		if (signals_then_again(req, k->s->ret, k->sig, k->nsig) == 0)
+			return 1;
+	}
 	e = next_ent(t);
 	/* The live process re-ran a signal-interrupted sleep via restart_syscall;
 	 * without the signal the replayed one never does. */
@@ -2067,6 +2232,14 @@ static int handle(struct seccomp_notif *req)
 		e = next_ent(t);
 	}
 	while (e && is_timing_only(e->s->nr, e->s->args[0]) && !same_call(e, req)) {
+		if (e->nsig && !e->sig_done) {
+			e->sig_done = 1;
+			if (signals_then_again(req, -513, e->sig, e->nsig) == 0) {
+				consume(e);
+				n_slack++;
+				return 1;
+			}
+		}
 		if (opt_verbose) {
 			fmt_call(b, sizeof(b), e->s->nr, e->s->args, 3);
 			printf("#%-7llu %-5u drop %s (recorded, not made now: timing only)\n",
@@ -2205,16 +2378,27 @@ static int handle(struct seccomp_notif *req)
 		return 1;                       /* interrupted: it will come again */
 	/* a write to a pipe or socket nobody reads: the kernel sends SIGPIPE too */
 	int piped = fr > 0 && !cont && e->s->ret == -EPIPE && sends_sigpipe(req);
-	if (piped && return_with_signal(req, e->s->ret, SIGPIPE) == 0) {
-		n_sig++;
-	} else if (fr > 0) {
-		if (respond(req->id, cont, e->s->ret))
+	int nums[5], nn = 0;
+	if (piped)
+		nums[nn++] = SIGPIPE;
+	for (int i = 0; i < e->nsig && !e->sig_done; i++)       /* recorded: timer, outside */
+		nums[nn++] = e->sig[i]->sig;
+	e->sig_done = 1;
+	if (nn && fr > 0 && !cont && return_with_signals(req, e->s->ret, 0, nums, nn) == 0) {
+		;
+	} else {
+		if (fr > 0 && respond(req->id, cont, e->s->ret))
 			return 1;
-		if (piped) {            /* second best: just after the call returns */
-			syscall(SYS_tgkill, tgid_of(req->pid), req->pid, SIGPIPE);
-			n_sig++;
-		}
+		/* second best (a call that ran for real, or made fds): just after it */
+		for (int i = 0; i < nn; i++)
+			syscall(SYS_tgkill, tgid_of(req->pid), req->pid, nums[i]);
 	}
+	n_sig += piped;
+	n_sigdone += nn - piped;
+	if (opt_verbose)
+		for (int i = piped; i < nn; i++)
+			printf("         %-5u signal %d (%s) delivered, as recorded\n", t->ns_tid,
+			       nums[i], strsignal(nums[i]));
 	if (opt_serial)
 		t->running = !blocks(req) || (!cont && req->data.nr == SYS_futex);
 

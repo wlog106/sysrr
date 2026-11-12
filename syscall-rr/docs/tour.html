@@ -316,17 +316,17 @@ dl.gloss dd { margin: 0; }
 
 <section id="works">
   <h2>What works today</h2>
-  <p>The test suite runs 25 programs through the whole journey and compares each copy with its original. Measured on 2026-11-12, on one machine.</p>
+  <p>The test suite runs 26 programs through the whole journey and compares each copy with its original. Measured on 2026-11-12, on one machine.</p>
   <div class="tablewrap"><table>
     <thead><tr><th>Kind of program</th><th>Result</th><th>Examples in the suite</th></tr></thead>
     <tbody>
-      <tr><td>One thread: files, network, child processes, its own signals</td><td><span class="pill ok">replays</span></td><td>A TCP echo loop, a file tree, a program that re-executes itself, Perl, Python with SQLite, Python asyncio</td></tr>
+      <tr><td>One thread: files, network, child processes</td><td><span class="pill ok">replays</span></td><td>A TCP echo loop, a file tree, a program that re-executes itself, Perl, Python with SQLite, Python asyncio</td></tr>
       <tr><td>Real servers</td><td><span class="pill ok">replays</span></td><td>Redis, nginx with two workers, memcached with four threads and four clients. Each copy ends with the same data as the original.</td></tr>
       <tr><td>Threads that share memory, a few microseconds apart</td><td><span class="pill ok">replays with -T</span></td><td>Two threads on a shared total</td></tr>
       <tr><td>A thread pool where workers take one lock at almost the same moment</td><td><span class="pill mid">often</span></td><td>A pool of four workers: 5 of 8 runs replayed to the last line. Before 2026-11-12 it was 0 of 6.</td></tr>
       <tr><td>Clients racing for the same key on a threaded server</td><td><span class="pill mid">sometimes</span></td><td>memcached with shared keys: 1 of 3 runs with two clients, none with four</td></tr>
       <tr><td>Python threads</td><td><span class="pill no">reported</span></td><td>The interpreter's lock changes hands on a timer. Replay follows for a few dozen calls, then reports that it lost track.</td></tr>
-      <tr><td>Signals from a timer or from another program</td><td><span class="pill no">reported</span></td><td>When they arrive isn't in the log.</td></tr>
+      <tr><td>Signals from a timer or from another program</td><td><span class="pill ok">replays</span></td><td>A timer firing 30 times a second, and signals sent with <code>podman kill</code>. Each one comes back at the syscall it interrupted. One that landed in the middle of a computation comes back slightly early.</td></tr>
       <tr><td>Time and random numbers that never enter the kernel</td><td><span class="pill no">not seen</span></td><td><code>time()</code>, and glibc's <code>getrandom()</code> on new systems. Reading the clock with <code>clock_gettime</code> works after one setting (below).</td></tr>
     </tbody>
   </table></div>
@@ -484,6 +484,7 @@ sudo ./sysrr_replay -p $(sudo podman inspect -f '{{.State.Pid}}' NEW) -g 1 -T re
     ['mmap', 'run', 'The program asked for memory and will use it. Replay also makes sure the memory lands at the recorded address, because allocators behave differently otherwise.'],
     ['clone', 'run', 'A new thread or process must really exist. Replay arranges for it to get the same id as in the recording, since the program has seen that id.'],
     ['futex', 'run', 'Locks work on the program\'s own memory, so waking a waiter is real. With ' + C('-T') + ', a recorded wait is the exception: it is answered from the log at the right moment, so that threads take locks in the recorded order.'],
+    ['a timer signal', 'fake', 'Not a call, but handled the same way. The copy\'s real timers are switched off. When the log says a signal interrupted this thread at a certain call, replay delivers it at that call, so the handler runs at the recorded moment.'],
     ['kill', 'run', 'A signal the program sends, to itself or to its children, has to arrive. The targets are real processes in the copy.'],
     ['close', 'run', 'The file numbers in the copy must stay the same as in the recording, so closing is real.'],
     ['nanosleep', 'fake', 'A replay doesn\'t wait. It returns at once, which is one reason a replay is usually faster than the original run.'],
@@ -497,7 +498,7 @@ sudo ./sysrr_replay -p $(sudo podman inspect -f '{{.State.Pid}}' NEW) -g 1 -T re
   }
   CALLS.forEach(function (c, k) {
     var b = document.createElement('button');
-    b.type = 'button'; b.className = 'chip'; b.id = 'chip-' + c[0]; b.textContent = c[0];
+    b.type = 'button'; b.className = 'chip'; b.id = 'chip-' + c[0].replace(/ /g, '-'); b.textContent = c[0];
     b.addEventListener('click', function () { showCall(k); });
     chips.appendChild(b);
   });

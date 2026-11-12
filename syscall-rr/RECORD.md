@@ -55,6 +55,7 @@ podman 5.4.2 + crun 1.21, criu 4.1.1. User xuanhh, passwordless sudo.
 | `tests/test_nginx.sh`, `tests/nginx/nginx.conf` | nginx master + 2 workers recorded with `-f`, replayed with `-T`, access/error logs compared |
 | `tests/net_target.c`, `file_target.c` | TCP/UDP over loopback with epoll; a file tree with big reads, listings, rename, links |
 | `tests/reexec_target.c`, `sigsync_target.c` | execve of itself every few rounds; signals a program sends itself (raise, SIGPIPE, SIGSEGV, sigqueue, sigwaitinfo) |
+| `tests/sigext_target.c` | signals from outside (test_replay.sh `KICK=USR1+TERM` sends them with podman kill) |
 | `tests/pool_target.c` | thread pool (mutex + condition variable); `burst` argument wakes all workers at once |
 | `tests/perl_target.pl`, `py_async_target.py`, `py_threads_target.py`, `py_mp_target.py` | Perl; Python asyncio; Python threads (GIL); multiprocessing |
 | `tests/test_memcached.sh`, `mc_client.pl` | memcached 1.6, 4 worker threads, 4 parallel clients, dataset compared (`MODE=race`: clients share keys) |

@@ -8,7 +8,7 @@ LIBBPF    := $(shell pkg-config --libs libbpf)
 
 APPS := sysrr sysrr_dump sysrr_replay raw_sysrr
 
-TARGETS := tests/ckpt_target tests/net_target tests/file_target tests/reexec_target tests/sigsync_target tests/pool_target tests/race_target tests/mt_target tests/fd_target tests/sc_target \
+TARGETS := tests/ckpt_target tests/sigext_target tests/net_target tests/file_target tests/reexec_target tests/sigsync_target tests/pool_target tests/race_target tests/mt_target tests/fd_target tests/sc_target \
 	   tests/fork_target tests/thread_target tests/signal_target tests/exit_target tests/rand_target tests/crash_target tests/queue_race_target
 
 all: $(APPS) $(TARGETS)

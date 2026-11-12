@@ -96,7 +96,7 @@ td small { color: var(--muted); }
   <a href="#children">New threads, processes</a>
   <a href="#fds">Real file descriptors</a>
   <a href="#mmap">New memory mappings</a>
-  <a href="#signals">Its own signals</a>
+  <a href="#signals">Signals</a>
   <a href="#end">How a replay ends</a>
   <a href="#tests">The test suite</a>
   <a href="#bugs">Bugs it found</a>
@@ -237,8 +237,8 @@ td small { color: var(--muted); }
 </section>
 
 <section id="signals">
-  <h2>Signals a program sends itself</h2>
-  <p>Some signals happen at an exact point in the program, so a replay must deliver them too:</p>
+  <h2>Signals</h2>
+  <p>A signal makes a program run a handler at a moment it didn't choose. Replay handles two families differently. The first family happens at an exact point in the program:</p>
   <div class="tablewrap"><table>
     <thead><tr><th>Signal</th><th>How it's replayed</th></tr></thead>
     <tbody>
@@ -249,7 +249,23 @@ td small { color: var(--muted); }
     </tbody>
   </table></div>
   <p><code>SIGPIPE</code> needs care. Sent while the thread is parked, it would make the kernel restart the write. Sent after the answer, it would arrive a little late. So replay uses ptrace for a moment: it interrupts the parked thread, puts the recorded result in its registers, queues the signal and lets go. The kernel then runs the handler first and the program sees <code>EPIPE</code> after it, as it did live.</p>
-  <p>Signals from a timer or from another program are still not replayed. See <a href="#limits">Limits</a>.</p>
+  <h3>Signals from a timer or from outside</h3>
+  <p>The second family arrives when the clock or another program decides. The recorder logs every signal a thread receives, and which of its syscalls came just before. Replay uses that:</p>
+  <div class="tablewrap"><table>
+    <thead><tr><th>In the recording</th><th>What replay does</th><th>How exact</th></tr></thead>
+    <tbody>
+      <tr><td>The signal interrupted a syscall, such as a sleep or a read that was waiting</td><td>When the copy makes that call, replay interrupts it the same way and sends the signal. The kernel then restarts the call or fails it with <code>EINTR</code>, as it did live.</td><td>Exact</td></tr>
+      <tr><td>The signal came right after a syscall returned</td><td>Sent together with that call's answer.</td><td>Exact</td></tr>
+      <tr><td>The signal came while the thread was computing</td><td>Sent with the answer of the thread's previous syscall.</td><td>Early, by the length of that computation. Replay counts these and says so.</td></tr>
+    </tbody>
+  </table></div>
+  <p>Three details make it work:</p>
+  <ul>
+    <li><strong>Restored timers are switched off.</strong> A timer in the copy would fire by today's clock, while the program lives in recorded time. All timer signals come from the log instead.</li>
+    <li><strong>Leftover signals are removed.</strong> A timer can run out while the copy sits frozen. That extra signal is taken out before the copy starts.</li>
+    <li><strong>A signal that was waiting at the checkpoint is not sent twice.</strong> It's part of the photo: the restore delivers it, and the copy wakes up inside its handler. Replay notices and skips the recorded copy of it.</li>
+  </ul>
+  <p>Signals the program's own threads send are left alone, because their <code>kill</code> runs for real. <code>SIGCHLD</code> is left alone too: the child processes are real and send it themselves, at their own time.</p>
 </section>
 
 <section id="end">
@@ -269,14 +285,14 @@ td small { color: var(--muted); }
 
 <section id="tests">
   <h2>The test suite</h2>
-  <p><code>tests/run_all.sh</code> runs each target through the same cycle: record, checkpoint, restore, replay, compare with the live run. It has 25 tests. The last full run, on 2026-11-12, was two rounds on one machine: 24 tests passed both rounds. <code>files</code> failed one round because of the test itself (it kept its files where podman archives them after the dump), and passed 4 of 4 once that was fixed. The second machine was not reachable that day.</p>
+  <p><code>tests/run_all.sh</code> runs each target through the same cycle: record, checkpoint, restore, replay, compare with the live run. It has 26 tests. The last full run, on 2026-11-12, was two rounds on one machine: 24 tests passed both rounds. <code>files</code> failed one round because of the test itself (it kept its files where podman archives them after the dump), and passed 4 of 4 once that was fixed. The second machine was not reachable that day.</p>
   <div class="tablewrap"><table>
     <thead><tr><th>Group</th><th>Tests</th><th>Passes when</th></tr></thead>
     <tbody>
-      <tr><td>Small programs</td><td><code>basic</code>, <code>threads</code>, <code>fds</code>, <code>syscalls</code>, <code>fork</code>, <code>thread-new</code>, <code>exit</code>, <code>crash</code>, <code>net</code>, <code>files</code>, <code>reexec</code>, <code>self-signal</code></td><td>The replay prints the same lines as the live run.</td></tr>
+      <tr><td>Small programs</td><td><code>basic</code>, <code>threads</code>, <code>fds</code>, <code>syscalls</code>, <code>fork</code>, <code>thread-new</code>, <code>exit</code>, <code>crash</code>, <code>net</code>, <code>files</code>, <code>reexec</code>, <code>self-signal</code>, <code>signal</code>, <code>signal-out</code></td><td>The replay prints the same lines as the live run.</td></tr>
       <tr><td>Languages</td><td><code>python</code>, <code>asyncio</code>, <code>perl</code></td><td>The same.</td></tr>
       <tr><td>Servers</td><td><code>redis</code>, <code>nginx</code>, <code>memcached</code></td><td>The restored server ends with the same data or logs as the live one.</td></tr>
-      <tr><td>Known limits</td><td><code>signal</code>, <code>vdso-random</code>, <code>shell</code>, <code>pool</code>, <code>pool-burst</code>, <code>py-threads</code>, <code>py-procs</code></td><td>The replay matches, or it stops by itself and says what went wrong. A hang or a false pass is a failure.</td></tr>
+      <tr><td>Known limits</td><td><code>vdso-random</code>, <code>shell</code>, <code>pool</code>, <code>pool-burst</code>, <code>py-threads</code>, <code>py-procs</code></td><td>The replay matches, or it stops by itself and says what went wrong. A hang or a false pass is a failure.</td></tr>
     </tbody>
   </table></div>
   <p>Eleven of these were added on 2026-11-12: <code>net</code>, <code>files</code>, <code>reexec</code>, <code>self-signal</code>, <code>pool</code>, <code>pool-burst</code>, <code>perl</code>, <code>asyncio</code>, <code>py-threads</code>, <code>py-procs</code> and <code>memcached</code>.</p>
@@ -289,6 +305,8 @@ td small { color: var(--muted); }
       <tr><td>memcached, 4 clients, each on its own keys</td><td>Stalled after 140 calls</td><td>3 of 3</td></tr>
       <tr><td>memcached, clients sharing keys</td><td>Not tested</td><td>1 of 3 with 2 clients. With 4 or more it diverges, after 1,300 to 4,600 of about 4,700 calls.</td></tr>
       <tr><td>Python threads</td><td>No progress after 20 s</td><td>Still fails, and says so.</td></tr>
+      <tr><td>A timer signal 30 times a second</td><td>Always diverged</td><td>3 of 3, with all 71 signals delivered</td></tr>
+      <tr><td>Signals sent from outside with <code>podman kill</code></td><td>Always diverged</td><td>Replays, 8 of 8 signals</td></tr>
     </tbody>
   </table></div>
   <p>Two tests can still fail now and then for known reasons. <code>nginx</code> can lose the race on its shared <code>conn=</code> counter, and the tool reports it. <code>python</code> can hit <code>CRIU checkpointing failed -52</code> before any replay starts.</p>
@@ -384,7 +402,7 @@ td small { color: var(--muted); }
   <div class="tablewrap"><table>
     <thead><tr><th>Not reproduced</th><th>Why</th><th>What you see</th></tr></thead>
     <tbody>
-      <tr><td>Signals from a timer or from another program</td><td>Not replayed. Their timing is not in the log. Signals a program sends itself are replayed.</td><td>A divergence at the first value they changed. Shell scripts often hit this through <code>SIGCHLD</code>.</td></tr>
+      <tr><td>A signal that lands in the middle of a computation; <code>SIGCHLD</code> from child processes</td><td>The log knows between which two syscalls a signal came, not at which instruction. Children are real processes and signal at their own time.</td><td>A divergence at the first value they changed. Shell scripts often hit this through <code>SIGCHLD</code>.</td></tr>
       <tr><td>Threads taking the same lock within a few hundred nanoseconds</td><td>Who won is not in the log. <code>-T</code> works it out from the futex calls, which is usually right for thread pools and memcached.</td><td>A divergence at the first value that depended on it.</td></tr>
       <tr><td>Python threads</td><td>The interpreter lock changes hands on a 5 ms timer, with no syscall that says who got it.</td><td>A divergence, or “no progress” after 20 s.</td></tr>
       <tr><td><code>time()</code> and the coarse clocks</td><td>The vDSO answers them from a shared page, whatever the clock source, so they're never recorded.</td><td>The replay sees today's time. A divergence if it's printed. <code>clock_gettime</code> and <code>gettimeofday</code> are fine with <code>acpi_pm</code>.</td></tr>
