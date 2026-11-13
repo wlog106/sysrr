@@ -145,7 +145,7 @@ mark { background: var(--hit); color: inherit; border-radius: 2px; }
         ['bpf', 'emit_signal', B, 760, 'A REC_SIGNAL: a signal or a thread\'s end, with the seq it came after.']
       ]),
       G('Checkpoints and generations', 'How the recorder notices CRIU and marks where a replay must start.', [
-        ['bpf', 'handle_ptrace', B, 567, 'Sees every ptrace call on the machine. SEIZE of a target thread counts up, DETACH counts down; at zero, gen++.'],
+        ['bpf', 'handle_ptrace', B, 567, 'Sees every ptrace call on the machine; only callers named criu count (any, with -t). SEIZE of a target thread counts up, DETACH counts down; at zero, gen++. Line numbers here are from 176ed3e, before that check.'],
         ['bpf', 'current_gen', B, 754, 'The generation a thread\'s next record belongs to. A thread CRIU already released counts as the next one.']
       ]),
       G('Filtering and costs', 'Keep other processes cheap and the ring from overflowing.', [
@@ -359,7 +359,8 @@ mark { background: var(--hit); color: inherit; border-radius: 2px; }
     ]),
 
     G('Tests', 'tests/: programs to record, and scripts that run the whole journey and compare copy with original.', [
-      ['test', 'run_all.sh', 'tests/run_all.sh', 1, 'The suite: 28 programs, one or two machines (REMOTE=), repeats (ROUNDS=), name filters.'],
+      ['test', 'run_all.sh', 'tests/run_all.sh', 1, 'The suite: 29 tests (28 programs through the whole journey, plus the tracer check), one or two machines (REMOTE=), repeats (ROUNDS=), name filters.'],
+      ['test', 'test_tracer.sh', 'tests/test_tracer.sh', 1, 'strace attached to a recorded program must not count as a checkpoint; with sysrr -t it must.'],
       ['test', 'run_crashes.sh', 'tests/run_crashes.sh', 1, 'Crash catalogue: 32 ways to die, each recorded and replayed to the same death.'],
       ['test', 'test_replay.sh', 'tests/test_replay.sh', 1, 'The first end-to-end test, including the tampered-log check (tamper_log.py).'],
       ['test', 'test_redis.sh · test_nginx.sh · test_memcached.sh · test_httpd.sh', 'tests/test_redis.sh', 1, 'Real servers: the copy must end with the same data or serve requests with the same threads.'],

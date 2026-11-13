@@ -505,7 +505,7 @@ read(3, buf, 40000)     → DATA(16 KiB)  DATA(16 KiB)  DATA(7 KiB)  SYSCALL</pr
   <ul>
     <li>The check sits before the target filter, because the process calling <code>ptrace</code> is CRIU, not the target.</li>
     <li>The pid CRIU passes is a thread id, so sysrr looks up that thread's process with <code>bpf_task_from_pid</code>.</li>
-    <li>Any tracer counts: attaching gdb looks like a checkpoint too.</li>
+    <li>Only CRIU counts: the caller's process name must be <code>criu</code>. Before 2026-11-13 any tracer counted, so attaching strace or gdb looked like a checkpoint. <code>sysrr -t</code> brings that back, for a CRIU binary that runs under another name.</li>
     <li>A sleep interrupted by the checkpoint gets <code>-EINTR</code> in both the live and the restored process, so both continue with the next syscall.</li>
   </ul>
   <h3>What it looked like in a real run</h3>
@@ -702,7 +702,7 @@ const Q = [
        "It treats it like a checkpoint: syscalls while attached are tagged criu-parasite, and gen increases at detach",
        "gdb's attach fails because sysrr holds ptrace",
        "The recorder exits"],
-   a: 1, e: "Detection means \"someone ptrace-attached our target\", not \"criu did\". sysrr doesn't use ptrace, so gdb attaches fine. Checking bpf_get_current_comm() in handle_ptrace would fix this false positive." },
+   a: 0, e: "handle_ptrace checks bpf_get_current_comm(): only a caller named criu counts. sysrr doesn't use ptrace, so gdb attaches fine and its target's syscalls are recorded as usual. Before 2026-11-13 the answer was B, and sysrr -t still behaves that way." },
  { t: "CRIU", q: "At the checkpoint the target was in clock_nanosleep, which got −516 (ERESTART_RESTARTBLOCK). What's the first syscall of generation 1?",
    o: ["restart_syscall",
        "clock_nanosleep again with the same arguments",
@@ -721,8 +721,9 @@ const OPEN = [
        "Thread B (or any target thread) makes a syscall on CPU 2 and overwrites the slot.",
        "A wakes on CPU 5: sys_exit reads CPU 5's slot, so wrong seq, args and gen. Data is attributed to the wrong syscall.",
        "Per-CPU only works for state that starts and ends inside one program run."] },
- { q: "How would you change handle_ptrace so that gdb or strace attaching to the target is not counted as a checkpoint? What would it still get wrong?",
-   m: ["Call bpf_get_current_comm() and only continue when the caller is \"criu\" (or check the caller's executable).",
+ { q: "handle_ptrace now counts only ptrace calls made by a process named criu. How does it check that, and what would it still get wrong?",
+   m: ["It calls bpf_get_current_comm() and returns unless the caller's name is \"criu\" (sysrr -t skips the check).",
+       "A CRIU binary run under another name would be missed: use -t, or check the caller's executable instead of its name.",
        "Still wrong: a failed SEIZE is counted, because state changes at sys_enter, before ptrace returns.",
        "Fix for that: remember the request at criu's sys_enter and apply it in sys_exit only if ret == 0."] },
 ];

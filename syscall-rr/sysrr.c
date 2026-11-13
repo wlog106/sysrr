@@ -150,11 +150,13 @@ static int add_descendants(struct sysrr_bpf *skel, int root)
 static void usage(const char *p)
 {
 	fprintf(stderr,
-		"usage: %s -p PID [-f] [-r] [-o FILE] [-b MB]\n"
+		"usage: %s -p PID [-f] [-r] [-t] [-o FILE] [-b MB]\n"
 		"  -p PID   host pid of the process to record\n"
 		"  -f       follow: also record processes it forks\n"
 		"  -r       race check: copy input buffers again at syscall exit, so\n"
 		"           sysrr_dump can show inputs changed during the syscall\n"
+		"  -t       count any ptrace attach (gdb, strace) as a checkpoint, not\n"
+		"           only criu's; for a criu binary renamed or wrapped\n"
 		"  -o FILE  output log (default sysrr.log)\n"
 		"  -b MB    ring buffer size in MiB, power of two (default 64)\n", p);
 	exit(1);
@@ -163,13 +165,14 @@ static void usage(const char *p)
 int main(int argc, char **argv)
 {
 	const char *outpath = "sysrr.log";
-	int pid = 0, follow = 0, race = 0, ring_mb = 64, opt;
+	int pid = 0, follow = 0, race = 0, any_tracer = 0, ring_mb = 64, opt;
 
-	while ((opt = getopt(argc, argv, "p:fro:b:")) != -1) {
+	while ((opt = getopt(argc, argv, "p:frto:b:")) != -1) {
 		switch (opt) {
 		case 'p': pid = atoi(optarg); break;
 		case 'f': follow = 1; break;
 		case 'r': race = 1; break;
+		case 't': any_tracer = 1; break;
 		case 'o': outpath = optarg; break;
 		case 'b': ring_mb = atoi(optarg); break;
 		default: usage(argv[0]);
@@ -194,6 +197,7 @@ int main(int argc, char **argv)
 	skel->rodata->target_tgid = pid;
 	skel->rodata->follow = follow;
 	skel->rodata->race_check = race;
+	skel->rodata->any_tracer = any_tracer;
 	skel->rodata->pidns_dev = nsst.st_dev;
 	skel->rodata->pidns_ino = nsst.st_ino;
 	/* follow mode does a hash lookup per syscall; first reject everything

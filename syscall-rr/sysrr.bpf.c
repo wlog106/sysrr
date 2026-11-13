@@ -39,6 +39,7 @@ volatile const u64 target_cgid;     /* 0 = no cgroup pre-filter */
 volatile const u64 pidns_dev, pidns_ino;
 volatile const u64 wake_thresh;     /* wake user space only past this many bytes */
 volatile const u32 race_check;      /* re-copy inputs at sys_exit (-r) */
+volatile const u32 any_tracer;      /* -t: any ptrace attach counts as a checkpoint, not only criu's */
 
 u64 seq_ctr;
 u32 gen;
@@ -563,16 +564,26 @@ static __always_inline void emit_marker(u32 kind, u32 tid, u32 g)
 	bpf_ringbuf_submit(m, BPF_RB_FORCE_WAKEUP);    /* rare: wake immediately */
 }
 
-/* Called for every ptrace(2) on the machine (by criu, gdb, strace, ...). */
+/* Called for every ptrace(2) on the machine (by criu, gdb, strace, ...).
+ * Only criu's count: a debugger or strace attaching to the target is not a
+ * checkpoint, and counting it would mark the target's own syscalls as
+ * parasite calls (F_DUMP) and start a generation no photo belongs to. */
 static __noinline void handle_ptrace(long req, s32 pid)
 {
 	struct task_struct *t;
 	struct task_state *st;
 	u32 kind = 0, tid;
 	bool new_gen = false;
+	char comm[16];
 
 	if (req != PTRACE_SEIZE && req != PTRACE_ATTACH && req != PTRACE_DETACH)
 		return;
+	if (!any_tracer) {
+		if (bpf_get_current_comm(comm, sizeof(comm)))
+			return;
+		if (comm[0] != 'c' || comm[1] != 'r' || comm[2] != 'i' || comm[3] != 'u' || comm[4])
+			return;
+	}
 	t = bpf_task_from_pid(pid);
 	if (!t)
 		return;

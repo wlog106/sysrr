@@ -20,6 +20,7 @@ failures=()
 # name | what it proves | environment and script
 TESTS=(
 "basic      |read, write, sleep; a tampered log must be caught |TARGET=ckpt_target test_replay.sh"
+"tracer     |strace on the target is not a checkpoint          |test_tracer.sh"
 "threads    |two threads sharing memory, in recorded order     |TARGET=mt_target REPLAY_OPTS=-T test_replay.sh"
 "fds        |files, sockets and pipes opened after a checkpoint|TARGET=fd_target test_replay.sh"
 "syscalls   |every syscall's output, about 100 cases           |TARGET=sc_target REPLAY_OPTS=-c KEEP_GOING=1 test_replay.sh"

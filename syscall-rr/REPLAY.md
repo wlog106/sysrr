@@ -636,7 +636,9 @@ option together with `--name`, so the copy keeps the original's name. Used by
 where TCP was involved; the `python` test has no TCP, so its -52 is still open.
 
 2026-11-13: 28 tests (added procs+thr, httpd; pool and pool-burst must now
-pass, with `SEARCH=40`). One full round: 28 of 28. Thread tests three rounds:
+pass, with `SEARCH=40`). One full round: 28 of 28. 2026-11-13 evening: 29 tests
+(added `tracer`, see RECORD.md "Only criu's ptrace counts"); a full round after that
+change: 28 of 29, pool failed once (search missed), then pool and pool-burst 4 of 4. Thread tests three rounds:
 all pass (see "Order search").
 
 2026-11-12, after signal replay: 26 tests (`signal` must now pass; `signal-out`

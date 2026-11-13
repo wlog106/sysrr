@@ -173,3 +173,14 @@ got signal ...` and `==== thread N ended: status ...`. The siginfo pointer in th
 is a scalar to the verifier, so it needs bpf_core_read. Default-action fatal async signals
 skip delivery: threads get SIGKILL and the real signal is only in the exit status. PID 1 of a
 pid namespace ignores default-action signals sent from inside.
+
+## Only criu's ptrace counts (2026-11-13)
+
+handle_ptrace used to treat any PTRACE_SEIZE/ATTACH/DETACH aimed at a target
+thread as CRIU: one second of `strace -p` marked 163 of the target's own
+syscalls F_DUMP and started a generation no checkpoint belongs to.  It now
+returns unless bpf_get_current_comm() of the caller is exactly "criu".
+`sysrr -t` restores the old rule (any tracer), for a criu binary that runs
+under another name.  Still open: a SEIZE that fails is counted (state changes
+at the caller's sys_enter, before ptrace returns).
+
