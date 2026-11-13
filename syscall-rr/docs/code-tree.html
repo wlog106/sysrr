@@ -1,0 +1,473 @@
+<title>sysrr Code Tree</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans+Condensed:wght@500;600&family=IBM+Plex+Sans:wght@400;600&display=swap">
+<style>
+/* Layout: one wide column. A toolbar (search, grouping, expand) sits over a single tree drawn with connector lines.
+   Same tokens as the three guides: teal = kernel side, amber = sysrr's user-space tools, blue = the log format. */
+:root {
+  --bg: #f3f5f4; --surface: #ffffff; --ink: #18201f; --muted: #586563; --line: #c9d3d1;
+  --kernel: #0b6f68; --kernel-soft: #e1f0ee; --user: #9a520c; --user-soft: #f7ebdc;
+  --target: #4b5bb0; --target-soft: #e6e9f7; --code-bg: #e9eeed; --hit: #fff1b8;
+  --f-display: "IBM Plex Sans Condensed", "Arial Narrow", system-ui, sans-serif;
+  --f-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --f-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: #0e1413; --surface: #151d1c; --ink: #e2eae8; --muted: #94a5a2; --line: #2f3d3b;
+    --kernel: #5cc4b8; --kernel-soft: #16302d; --user: #e4a65f; --user-soft: #33261a;
+    --target: #97a5f0; --target-soft: #1e2340; --code-bg: #1c2625; --hit: #4a3f12;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0e1413; --surface: #151d1c; --ink: #e2eae8; --muted: #94a5a2; --line: #2f3d3b;
+  --kernel: #5cc4b8; --kernel-soft: #16302d; --user: #e4a65f; --user-soft: #33261a;
+  --target: #97a5f0; --target-soft: #1e2340; --code-bg: #1c2625; --hit: #4a3f12;
+}
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--ink); font: 16px/1.55 var(--f-body);
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+.wrap { max-width: 1120px; margin: 0 auto; padding-block: 32px 96px; }
+.suite { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 16px; font-size: 14px; padding-bottom: 12px; margin-bottom: 22px; border-bottom: 1px solid var(--line); }
+.suite b { font: 600 12px var(--f-display); letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
+.suite a { color: var(--muted); text-decoration: none; }
+.suite a:hover, .suite a:focus-visible { color: var(--kernel); text-decoration: underline; }
+.suite a[aria-current="page"] { color: var(--ink); font-weight: 600; }
+.suite small { color: var(--muted); font-size: 12.5px; }
+.eyebrow { font: 600 12px var(--f-display); letter-spacing: .1em; text-transform: uppercase; color: var(--kernel); }
+h1 { font: 600 clamp(34px, 6vw, 48px)/1.05 var(--f-display); margin: 6px 0 12px; letter-spacing: -.01em; text-wrap: balance; }
+.lede { font-size: 18px; max-width: 66ch; margin: 0 0 8px; }
+.note { font-size: 14px; color: var(--muted); max-width: 76ch; margin: 0 0 20px; }
+code { font-family: var(--f-mono); font-size: .88em; background: var(--code-bg); padding: 1px 5px; border-radius: 4px; }
+a { color: var(--kernel); }
+
+.bar { position: sticky; top: env(safe-area-inset-top, 0px); z-index: 5; background: var(--bg); display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: center; padding-block: 12px; border-bottom: 1px solid var(--line); margin-bottom: 16px; }
+body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-area-inset-top, 0px); z-index: 10; background: var(--bg); }
+.bar input[type="search"] { flex: 1 1 260px; min-width: 0; font: 15px var(--f-body); padding: 8px 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--ink); }
+.bar input:focus-visible, button:focus-visible, .row:focus-visible { outline: 2px solid var(--kernel); outline-offset: 2px; }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+button { font: 600 14px var(--f-body); color: var(--ink); background: var(--surface); border: 0; padding: 7px 12px; cursor: pointer; }
+.seg button + button { border-left: 1px solid var(--line); }
+.seg button[aria-pressed="true"] { background: var(--kernel-soft); color: var(--kernel); }
+.plain { border: 1px solid var(--line); border-radius: 6px; }
+.plain:hover { border-color: var(--kernel); }
+.count { font: 600 13px var(--f-mono); color: var(--muted); font-variant-numeric: tabular-nums; margin-left: auto; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 13px; color: var(--muted); margin: 0 0 14px; }
+
+/* the tree */
+.tree, .tree ul { list-style: none; margin: 0; padding: 0; }
+.tree ul { margin-left: 13px; padding-left: 18px; border-left: 1px solid var(--line); }
+.tree li { position: relative; }
+.tree ul > li::before { content: ""; position: absolute; left: -18px; top: 17px; width: 14px; border-top: 1px solid var(--line); }
+.tree ul > li:last-child::after { content: ""; position: absolute; left: -19px; top: 18px; bottom: 0; width: 3px; background: var(--bg); }
+.row { display: grid; grid-template-columns: 22px minmax(0, 1fr); gap: 6px; align-items: start; padding: 5px 6px; border-radius: 6px; }
+.row.group { cursor: pointer; }
+.row.group:hover { background: var(--surface); }
+.tog { width: 22px; height: 22px; display: grid; place-items: center; font: 600 13px var(--f-mono); color: var(--muted); border-radius: 4px; }
+.row.group .tog { background: var(--code-bg); }
+.body { min-width: 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; }
+.gname { font: 600 16px var(--f-display); letter-spacing: .01em; }
+.depth0 > .row .gname { font-size: 20px; }
+.gdesc { font-size: 14px; color: var(--muted); flex-basis: 100%; }
+.n { font: 600 12px var(--f-mono); color: var(--muted); }
+.name { font: 600 14.5px var(--f-mono); text-decoration: none; overflow-wrap: anywhere; }
+.name:hover { text-decoration: underline; }
+.k-fn .name { color: var(--user); }
+.k-bpf .name, .k-map .name, .k-var .name { color: var(--kernel); }
+.k-struct .name { color: var(--target); }
+.k-sh .name, .k-test .name { color: var(--ink); }
+.where { font: 12.5px var(--f-mono); color: var(--muted); }
+.kind { font: 600 10.5px var(--f-display); letter-spacing: .08em; text-transform: uppercase; padding: 1px 6px; border-radius: 999px; background: var(--code-bg); color: var(--muted); }
+.k-bpf .kind { background: var(--kernel-soft); color: var(--kernel); }
+.k-map .kind, .k-var .kind { background: var(--kernel-soft); color: var(--kernel); }
+.k-struct .kind { background: var(--target-soft); color: var(--target); }
+.k-fn .kind { background: var(--user-soft); color: var(--user); }
+.desc { font-size: 14.5px; flex-basis: 100%; }
+mark { background: var(--hit); color: inherit; border-radius: 2px; }
+.empty { padding: 20px; color: var(--muted); }
+@media (max-width: 560px) { .tree ul { margin-left: 8px; padding-left: 12px; } .tree ul > li::before { left: -12px; width: 9px; } .tree ul > li:last-child::after { left: -13px; } }
+</style>
+
+<div class="wrap">
+  <nav class="suite" aria-label="sysrr guides"><b>sysrr guides</b><a href="https://claude.ai/artifact/YJn3muzGnxV1wMH1Sd2ycT">Walkthrough <small>· start here</small></a><a href="https://claude.ai/artifact/6ZebwgVF4vFLJRKdhWRsFA">Recorder Guide <small>· sysrr, sysrr_dump</small></a><a href="https://claude.ai/artifact/BrqbnVeMN3qqisG1nxenKb">Replay Guide <small>· sysrr_replay, search</small></a><a href="#" aria-current="page">Code Tree <small>· every function</small></a></nav>
+  <div class="eyebrow">sysrr · source map</div>
+  <h1>sysrr Code Tree</h1>
+  <p class="lede">Every function, struct, map and script in sysrr, sorted by the job it does. Open a branch to see what's inside. Click a name to open that line on GitHub.</p>
+  <p class="note">Line numbers are for commit <code>176ed3e</code>; the code hasn't changed since then. Switch to <em>By file</em> to see the same items in source order. Not listed: <code>raw_sysrr</code> (the first prototype), the generated <code>*.skel.h</code> files and <code>syscall_names.h</code>.</p>
+  <div class="bar">
+    <input type="search" id="q" placeholder="Search names and descriptions, e.g. futex, fd, CRIU" aria-label="Search the tree">
+    <div class="seg" role="group" aria-label="Group by">
+      <button type="button" id="by-concept" aria-pressed="true">By concept</button>
+      <button type="button" id="by-file" aria-pressed="false">By file</button>
+    </div>
+    <button type="button" class="plain" id="open-all">Open all</button>
+    <button type="button" class="plain" id="close-all">Close all</button>
+    <span class="count" id="count"></span>
+  </div>
+  <div class="legend"><span><span class="kind" style="background: var(--kernel-soft); color: var(--kernel)">eBPF</span> runs in the kernel</span><span><span class="kind" style="background: var(--user-soft); color: var(--user)">fn</span> user-space C function</span><span><span class="kind" style="background: var(--target-soft); color: var(--target)">struct</span> data layout</span><span><span class="kind" style="background: var(--kernel-soft); color: var(--kernel)">map</span> eBPF map or global</span><span><span class="kind">script</span> shell, tests</span></div>
+  <ul class="tree" id="tree"></ul>
+</div>
+
+<script>
+(function () {
+  var GH = 'https://github.com/wlog106/sysrr/blob/176ed3e/syscall-rr/';
+  var B = 'sysrr.bpf.c', S = 'sysrr.c', H = 'sysrr.h', D = 'sysrr_dump.c', P = 'sysrr_replay.c', X = 'sysrr_search.sh';
+  /* leaf: [kind, name, file, line, what it does]; group: { g, d, c } */
+  function G(g, d, c) { return { g: g, d: d, c: c }; }
+
+  var TREE = [
+    G('Recording', 'Machine A. Watch a running program from the kernel and write down every syscall and its bytes.', [
+      G('The hooks', 'eBPF programs the kernel runs at fixed moments, for every process. They return at once unless the process is a target.', [
+        ['bpf', 'sys_enter', B, 642, 'Every syscall entry. Takes the next seq, saves the 6 arguments in tstate, copies the inputs, and watches for ptrace.'],
+        ['bpf', 'sys_exit', B, 697, 'Every syscall exit. Copies the outputs and sends the REC_SYSCALL record that closes the call.'],
+        ['bpf', 'on_signal', B, 792, 'A signal is delivered to a target thread: records which one, where the thread was, and whether it kills.'],
+        ['bpf', 'on_exit', B, 814, 'A target thread ends: records its exit status.'],
+        ['bpf', 'on_fork', B, 827, 'A target forks (with -f): the child becomes a target too.']
+      ]),
+      G('Choosing what to copy', 'Two big switch statements that know, for about 300 syscalls, which arguments point to memory and how long it is.', [
+        ['bpf', 'capture_enter', B, 357, 'Inputs, copied at entry: write data, paths, addresses. Marked D_IN or D_STR.'],
+        ['bpf', 'capture_exit', B, 411, 'Outputs, copied at exit when the buffer holds the result: read data, stat, the time. Marked D_OUT.'],
+        ['bpf', 'user_u32', B, 126, 'Reads one 32-bit value from the program, e.g. a length that says how big a buffer is.']
+      ]),
+      G('Writing records', 'Everything leaves the kernel through the events ring buffer.', [
+        ['bpf', 'emit_buf', B, 197, 'Copies a buffer as one or more REC_DATA records of up to 16 KiB. Verified once, called from about 70 places.'],
+        ['bpf', 'chunk_cb', B, 153, 'One 16 KiB piece, built in scratch and copied into the ring. The bpf_loop callback behind emit_buf.'],
+        ['bpf', 'emit_str', B, 216, 'Copies a NUL-terminated string (a path) as REC_DATA.'],
+        ['bpf', 'emit_iov', B, 258, 'readv/writev: the iovec array, then each buffer it points to.'],
+        ['bpf', 'emit_msghdr', B, 286, 'recvmsg/sendmsg: the msghdr, its address, its iovecs and its control data.'],
+        ['bpf', 'emit_mmsg', B, 308, 'recvmmsg/sendmmsg: each message header in the array.'],
+        ['bpf', 'emit_syscall', B, 613, 'The REC_SYSCALL record: number, args, result, thread ids, generation, how many DATA records came before.'],
+        ['bpf', 'emit_marker', B, 547, 'A REC_MARKER: CRIU seized or released a thread, or a new generation started.'],
+        ['bpf', 'emit_signal', B, 760, 'A REC_SIGNAL: a signal or a thread\'s end, with the seq it came after.']
+      ]),
+      G('Checkpoints and generations', 'How the recorder notices CRIU and marks where a replay must start.', [
+        ['bpf', 'handle_ptrace', B, 567, 'Sees every ptrace call on the machine. SEIZE of a target thread counts up, DETACH counts down; at zero, gen++.'],
+        ['bpf', 'current_gen', B, 754, 'The generation a thread\'s next record belongs to. A thread CRIU already released counts as the next one.']
+      ]),
+      G('Filtering and costs', 'Keep other processes cheap and the ring from overflowing.', [
+        ['bpf', 'is_target', B, 117, 'Is this process one we record? One compare without -f, a hash lookup with it.'],
+        ['bpf', 'wake_flags', B, 103, 'Wakes sysrr only when the ring is a quarter full. Waking it every time was most of the slowdown.'],
+        ['bpf', 'count_lost', B, 109, 'The ring was full: count a lost record on this CPU.']
+      ]),
+      G('State the hooks share', 'Programs keep nothing between runs, so everything lives in maps.', [
+        ['map', 'events', B, 50, 'Ring buffer, 64 MiB. One ordered queue from all CPUs to sysrr.'],
+        ['map', 'targets', B, 57, 'Hash set of process ids to record (with -f).'],
+        ['struct', 'task_state', B, 59, 'One thread\'s notes from entry to exit: seq, args, generation, flags, whether CRIU holds it.'],
+        ['map', 'tstate', B, 78, 'Task storage holding a task_state per thread. It follows the thread to any CPU.'],
+        ['map', 'scratch', B, 88, 'Per-CPU 16 KiB staging area for one REC_DATA. Too big for the 512-byte BPF stack.'],
+        ['map', 'lost', B, 95, 'Per-CPU count of records that didn\'t fit.'],
+        ['var', 'seq_ctr', B, 43, 'Global counter. Every syscall entry takes the next number, atomically: the exact order across threads.'],
+        ['var', 'gen', B, 44, 'The current generation. Goes up when CRIU releases the program\'s last thread.'],
+        ['var', 'seized_cnt', B, 45, 'How many target threads CRIU holds right now.']
+      ]),
+      G('The loader: sysrr.c', 'User space. Loads the eBPF side, then moves records from the ring to the file.', [
+        ['fn', 'main', S, 163, 'Parses -p/-o/-f/-r, sets constants, loads and attaches the programs, writes the file header, polls the ring every 10 ms.'],
+        ['fn', 'handle_rec', S, 28, 'Called once per record from the ring: counts it and fwrites it to rec.log unchanged.'],
+        ['fn', 'add_descendants', S, 124, 'With -f: children the target already has (nginx workers) become targets from the start.'],
+        ['fn', 'cgroup_id_of', S, 58, 'The target\'s cgroup id, so the hooks can skip everything outside its container with one compare.'],
+        ['fn', 'ns_pid_of', S, 81, 'The target\'s pid inside its own namespace, from /proc/PID/status.'],
+        ['fn', 'ppid_of', S, 108, 'A process\'s parent, from /proc/PID/stat.'],
+        ['fn', 'on_sig', S, 26, 'Ctrl-C or SIGTERM: stop the polling loop.'],
+        ['fn', 'usage', S, 150, 'Prints the options.']
+      ])
+    ]),
+
+    G('The log', 'rec.log. The only thing the recorder and the replayer share: a header, then records, each starting with type, length and seq.', [
+      G('Records', 'C structs in sysrr.h, written as they are.', [
+        ['struct', 'rec_hdr', H, 66, 'Starts every record: type, flags, length, seq. A reader skips types it doesn\'t know.'],
+        ['struct', 'rec_syscall', H, 74, 'One call: number, 6 args, result, host and container thread ids, generation, ndata. Sent last.'],
+        ['struct', 'rec_data', H, 87, 'Bytes of one argument: which arg, which kind, which piece, offset, length, then the data.'],
+        ['struct', 'rec_marker', H, 98, 'A CRIU event: seized, detached, new generation.'],
+        ['struct', 'rec_signal', H, 111, 'A signal reached a thread, or the thread ended (SIG_EXIT). Its seq says after which call.'],
+        ['struct', 'rec_stats', H, 124, 'Totals written at Ctrl-C: syscalls, data records, bytes, lost.'],
+        ['struct', 'sysrr_file_hdr', H, 135, 'The first bytes of the file: magic, version, pid, namespace, kernel, command name.']
+      ]),
+      G('Flags and kinds', 'Small enums that tell a reader how far to trust a record.', [
+        ['struct', 'F_DUMP … F_LOST', H, 40, 'Syscall flags: made by CRIU (F_DUMP), entry missed, never returned, truncated, memory unreadable, ring full.'],
+        ['struct', 'data_kind', H, 52, 'D_OUT: kernel to program, replay gives it back. D_IN, D_STR: program to kernel, replay compares it.'],
+        ['struct', 'marker_kind', H, 59, 'M_SEIZE, M_DETACH, M_GEN.']
+      ]),
+      G('Reading the log: sysrr_dump.c', 'Prints a log and checks it is complete.', [
+        ['fn', 'main', D, 234, 'Options -g (one generation), -a, -x (hex), -s (summary and integrity check), -r (race check).'],
+        ['fn', 'on_syscall', D, 157, 'Prints one syscall with the DATA records parked for its seq, and checks their count against ndata.'],
+        ['fn', 'mark_seen', D, 45, 'Notes a seq in a bitmap, to report holes (missing syscalls) at the end.'],
+        ['fn', 'check_race', D, 129, 'With -r: compares an input copied at entry with the copy made at exit. A difference means it changed during the call.'],
+        ['fn', 'preview', D, 59, 'Shows the start of a buffer as text or hex.'],
+        ['fn', 'print_byte', D, 114, 'One byte, printable or escaped.'],
+        ['fn', 'sysname', D, 22, 'Syscall number to name.']
+      ])
+    ]),
+
+    G('Replay', 'Machine B. Drive a restored copy through one generation of the log: sysrr_replay.c.', [
+      G('The main loop', 'Wait for a parked syscall, decide, answer, repeat.', [
+        ['fn', 'main', P, 3143, 'Options, then load the log, order it (-T), attach to every process of the copy, and supervise.'],
+        ['fn', 'supervise', P, 2963, 'polls every listener, reads notifications (NOTIF_RECV), hands each to handle(). Detects a stall after 20 s.'],
+        ['fn', 'handle', P, 2550, 'One parked syscall: find the thread\'s next record, check it, fake it or let it run, answer.'],
+        ['fn', 'respond', P, 984, 'SECCOMP_IOCTL_NOTIF_SEND: either a result for a faked call or CONTINUE for one that runs.'],
+        ['fn', 'consume', P, 2295, 'Marks a record used.'],
+        ['fn', 'next_ent', P, 1968, 'A thread\'s next unused record.'],
+        ['fn', 'thread_for', P, 916, 'The recorded thread for a container thread id; a new thread gets its queue here.'],
+        ['fn', 'ns_tid_of', P, 877, 'Host thread id to container thread id.'],
+        ['fn', 'tgid_of', P, 816, 'The process a thread belongs to.'],
+        ['fn', 'pidfd_for', P, 831, 'A pidfd for a thread\'s process, kept for pidfd_getfd and signals.'],
+        ['struct', 'proc', P, 812, 'One process of the copy: its listener fd and pidfd.'],
+        ['fn', 'on_int', P, 2867, 'Ctrl-C: end the replay cleanly.']
+      ]),
+      G('Taking over the copy', 'The restored copy is frozen. A few milliseconds of ptrace plant a seccomp filter in it; after that, no ptrace.', [
+        ['fn', 'attach_listener', P, 173, 'Makes the copy run mmap, prctl, timer resets and seccomp(NEW_LISTENER) on itself, then takes the listener fd.'],
+        ['fn', 'inject', P, 147, 'Makes the stopped process execute one syscall, through "syscall; int3" written at its instruction pointer.'],
+        ['fn', 'continue_one', P, 129, 'Lets one of our own injected calls through the filter we just installed.'],
+        ['fn', 'xptrace', P, 117, 'ptrace that stops with a message on error.']
+      ]),
+      G('Loading the log', 'Keep one generation, give each thread a queue, tie data and signals to their calls.', [
+        ['fn', 'load', P, 430, 'Maps the file, keeps generation N without F_DUMP, attaches DATA records by seq, builds one queue per thread.'],
+        ['struct', 'ent', P, 275, 'One recorded call during replay: its records, whether it is used, its -T keys, its signals.'],
+        ['struct', 'thr', P, 290, 'One recorded thread: its queue, its position, what it is waiting for.'],
+        ['fn', 'plan_signals', P, 390, 'Ties each recorded timer or outside signal to the call it interrupted.'],
+        ['fn', 'sig_of_kill', P, 379, 'Which signal a kill/tgkill/sigqueue record sent.'],
+        ['fn', 'cmp_ent', P, 327, 'Sort records by seq.'],
+        ['fn', 'find_ent', P, 333, 'Binary search for a record by seq.'],
+        ['fn', 'thr_of', P, 346, 'The thread with a given container thread id.'],
+        ['fn', 'is_restart_ret', P, 354, 'Result -512 to -516: the call was interrupted and will run again.'],
+        ['fn', 'is_clone', P, 322, 'clone, clone3, fork or vfork.']
+      ]),
+      G('Checking a call', 'A copy that has drifted hands the kernel something the original didn\'t. These catch it.', [
+        ['fn', 'same_call', P, 2359, 'Is this the recorded call? The number, plus the clock id for clock_gettime.'],
+        ['fn', 'check_inputs', P, 1293, 'Reads every D_IN and D_STR piece from the copy\'s memory and compares it byte for byte.'],
+        ['fn', 'resolve', P, 731, 'Where a recorded piece lives in the copy, from the call\'s arguments (and its iovec or msghdr).'],
+        ['fn', 'mem_read', P, 715, 'process_vm_readv from the copy.'],
+        ['fn', 'mem_read_str', P, 1523, 'A path from the copy, page by page.'],
+        ['fn', 'fd_args', P, 2418, 'Which arguments are file descriptors. A different fd is a divergence.'],
+        ['fn', 'nargs', P, 682, 'How many arguments are worth comparing for a call.'],
+        ['fn', 'is_iov_call', P, 706, 'readv, writev and friends.'],
+        ['fn', 'is_msg_call', P, 712, 'recvmsg or sendmsg.'],
+        ['fn', 'from_vdso', P, 1256, 'Did this call come from vDSO code? Such calls were never recorded.'],
+        ['fn', 'is_timing_only', P, 2351, 'Calls whose number depends on timing (futex, yield, sleep): one missing from the log still runs.'],
+        ['fn', 'is_housekeeping', P, 2387, 'Allocator mmap/munmap that can differ harmlessly.'],
+        ['fn', 'same_block', P, 2394, 'Same call and same second argument: the retry of an interrupted wait.']
+      ]),
+      G('Fake or run', 'A call that tells the program about the outside is faked. A call that changes the program itself runs.', [
+        ['fn', 'runs_real', P, 644, 'The decision for one call. Takes failures, -T lock waits and pending signals into account.'],
+        ['fn', 'passthrough', P, 542, 'The list of calls that always run: memory, signals, threads, exec, exit, futex, close.'],
+        ['fn', 'futex_waits', P, 586, 'Is this futex op a wait?'],
+        ['fn', 'takes_pending_signal', P, 630, 'sigwaitinfo or a signalfd read whose signal is really pending in the copy: it must run.'],
+        ['fn', 'sig_in_mask', P, 593, 'Is a signal in a thread\'s blocked or pending set, from /proc.'],
+        ['fn', 'sig_pending', P, 612, 'Is a signal waiting for this thread?'],
+        ['fn', 'is_standin', P, 575, 'Is this fd one of replay\'s memfd stand-ins? Writes to those run for real.'],
+        ['fn', 'fd_is', P, 617, 'Does this fd of the copy point at a given file?']
+      ]),
+      G('Faking a call', 'The call doesn\'t run. The copy gets the recorded bytes and result.', [
+        ['fn', 'inject_outputs', P, 1366, 'Writes every D_OUT piece where the arguments point, after resolving all addresses first.'],
+        ['fn', 'mem_write', P, 721, 'process_vm_writev into the copy.'],
+        ['fn', 'capture_write', P, 1415, 'Saves what the copy writes to stdout/stderr, for -w.'],
+        ['fn', 'remember_stdio', P, 1393, 'Notes which files the copy\'s stdout and stderr are.'],
+        ['fn', 'is_stdio', P, 1403, 'Is this fd the container\'s stdout or stderr? Decided by the file, not the number.']
+      ]),
+      G('File descriptors', 'A faked open still needs a real fd at the recorded number, because later real calls (mmap, close) use it.', [
+        ['fn', 'install_fds', P, 1701, 'Answers a faked fd-creating call by placing real fds at the recorded numbers.'],
+        ['fn', 'make_fd', P, 1622, 'A real object of the same kind: the same file, a socket, a pipe, an eventfd, or a stand-in.'],
+        ['fn', 'open_like', P, 1553, 'Opens the file an open() names, inside the container\'s root (RESOLVE_IN_ROOT), without O_CREAT or O_TRUNC.'],
+        ['fn', 'addfd', P, 1687, 'SECCOMP_IOCTL_NOTIF_ADDFD: put an fd into the copy at an exact number.'],
+        ['fn', 'install_scm_fds', P, 1786, 'recvmsg that received fds (SCM_RIGHTS): stand-ins at the numbers in the recorded control data.'],
+        ['fn', 'fd_kind', P, 1469, 'Which calls create fds, and how many.'],
+        ['fn', 'fd_cloexec', P, 1493, 'Does the new fd get close-on-exec? Every call spells it differently.'],
+        ['fn', 'target_has_fd', P, 1679, 'Is an fd number open in the copy right now?'],
+        ['fn', 'devnull', P, 1541, 'Fallback: /dev/null, with a note why.']
+      ]),
+      G('Memory and processes', 'Calls that run must produce the same addresses and ids as live.', [
+        ['fn', 'needs_pin', P, 1833, 'Did the kernel choose this mapping\'s address? Then it must land where it landed live.'],
+        ['fn', 'pin_address', P, 1847, 'Reissues the mmap with MAP_FIXED_NOREPLACE at the recorded address, with a brief ptrace.'],
+        ['fn', 'range_mapped', P, 2400, 'Is any part of a range already mapped in the copy?'],
+        ['fn', 'set_next_pid', P, 958, 'Writes ns_last_pid so the next clone gets the recorded id.'],
+        ['fn', 'expect_child', P, 944, 'A clone returned: wait for the child and attach its listener.'],
+        ['fn', 'has_execed', P, 2373, 'Did this process execve during the replay? Its addresses are random again.'],
+        ['fn', 'note_exec', P, 2381, 'Remember that a process execed.']
+      ]),
+      G('Signals', 'Signals arrive at the call they interrupted live.', [
+        ['fn', 'return_with_signals', P, 1914, 'Answers a call and makes recorded signals arrive as it returns.'],
+        ['fn', 'signals_then_again', P, 1951, 'Delivers signals to a thread parked at a call that will run again after the handlers.'],
+        ['fn', 'sends_sigpipe', P, 1895, 'A faked write to a pipe or socket nobody reads also sends SIGPIPE.'],
+        ['fn', 'kill_all', P, 859, 'Stop, continue or kill every process of the copy.']
+      ]),
+      G('Thread order: -T and -S', 'With shared memory, who runs first matters and the log doesn\'t say. -T lets one thread run program code at a time.', [
+        G('Building the order', 'Done once, after load.', [
+          ['fn', 'order_serial', P, 2092, 'Gives every record its turn: when its call returned live. Applies -F flips.'],
+          ['fn', 'release_time', P, 1997, 'The moment a record counts: its exit, or its start for clone, execve and calls that free something.'],
+          ['fn', 'frees', P, 1991, 'close, munmap, dup2, dup3: calls that give a number or an address back.'],
+          ['fn', 'cmp_exit', P, 2004, 'Sort records by their turn.'],
+          ['fn', 'find_deps', P, 2049, 'Facts that beat the guess: an epoll event comes after the epoll_ctl that armed it.'],
+          ['fn', 'piece', P, 2041, 'A record\'s data piece of a given kind and argument.'],
+          ['fn', 'flipped', P, 2029, 'Is this record in the -F list?']
+        ]),
+        G('Whose turn is it', 'Asked for every parked call.', [
+          ['fn', 'next_exit_is', P, 2235, 'Is this record the next in the turn order? Skips threads asleep in waits.'],
+          ['fn', 'global_next_seq_is', P, 2288, '-S: is this record the next in seq order?'],
+          ['fn', 'running_thread', P, 2255, 'Which thread is running program code now. Everyone else waits.'],
+          ['fn', 'dep_waiting', P, 2084, 'Is a record still waiting for a record it depends on?'],
+          ['fn', 'blocks', P, 2265, 'Might this call sleep in the kernel? Then the next thread may go.'],
+          ['fn', 'asleep', P, 2229, 'Is a thread asleep in a wait the recording doesn\'t have?'],
+          ['fn', 'lock_free_yet', P, 2210, 'A thread found a lock taken live but free here: it goes later.'],
+          ['fn', 'lock_holder_first', P, 2935, 'The next thread waits on a lock: let the holder run first.']
+        ]),
+        G('Threads at the start', 'Threads restored in the middle of program code.', [
+          ['fn', 'hold_thread', P, 2156, 'Keeps a restored thread in a ptrace stop until its turn to start.'],
+          ['fn', 'first_held', P, 2176, 'The held thread whose turn comes first.'],
+          ['fn', 'start_threads', P, 2188, 'Starts held threads whose turn has come.'],
+          ['fn', 'only_unstarted_left', P, 2314, 'Is every remaining record in a thread that never started?']
+        ]),
+        G('Lock waits the log lacks', 'Waits that happened only in the replay are held and answered later.', [
+          ['fn', 'hold_wait', P, 2453, 'Holds an unrecorded futex wait instead of letting it sleep.'],
+          ['fn', 'note_wake', P, 2488, 'A real futex wake ran: mark the held waits it wakes.'],
+          ['fn', 'wake_count', P, 2478, 'How many waiters a futex op wakes.'],
+          ['fn', 'answer_held', P, 2505, 'Answers a held wait.'],
+          ['fn', 'release_woken', P, 2516, 'Answers a woken held wait when its thread\'s turn comes.'],
+          ['fn', 'release_any_held', P, 2536, 'Nothing can move: wake one held wait (spurious wakes are allowed).']
+        ])
+      ]),
+      G('Endings and reports', 'How a replay ends, and what it prints.', [
+        ['fn', 'diverge', P, 1272, 'Prints the DIVERGENCE line: the recorded call and the call the copy made.'],
+        ['fn', 'history', P, 789, 'The thread\'s last calls, for the report.'],
+        ['fn', 'finish', P, 1213, 'Does what -e says: stop (freeze the copy), live (let it go on), or kill.'],
+        ['fn', 'end_reached', P, 2323, 'Every usable record is used: the copy is where the original was at Ctrl-C.'],
+        ['fn', 'explain_stall', P, 2874, 'Nothing moved for 20 s: says who is waiting for whom.'],
+        ['fn', 'report_early_end', P, 2908, 'The copy ended but the live run went on.'],
+        ['fn', 'report_live_end', P, 1081, 'Compares how the copy ended with how the original did.'],
+        ['fn', 'live_death', P, 1060, 'The signal that killed the live run, if any.'],
+        ['fn', 'own_end', P, 1047, 'How a thread ended according to the log.'],
+        ['fn', 'is_fault', P, 1037, 'SIGSEGV, SIGBUS, SIGFPE or SIGILL raised by the CPU.'],
+        ['fn', 'snapshot_maps', P, 1008, 'The copy\'s memory map at the start, to name code addresses in reports.'],
+        ['fn', 'where', P, 1025, 'An address as library+offset.'],
+        ['fn', 'print_totals', P, 1110, 'Counts at the end: faked, run, pinned, signals.'],
+        ['fn', 'fmt_call', P, 771, 'Formats a call with its arguments.'],
+        ['fn', 'preview', P, 781, 'The start of a buffer, for the report.'],
+        ['fn', 'sysname', P, 92, 'Syscall number to name.']
+      ])
+    ]),
+
+    G('Searching for an order', 'When -T guesses wrong, try other guesses until the log replays to its end.', [
+      ['fn', 'search_report', P, 1169, 'At a divergence, prints SEARCH progress, SEARCH at and SEARCH candidates for the script.'],
+      ['fn', 'overlaps', P, 1155, 'Does a record\'s stretch of code overlap a time window?'],
+      ['fn', 'add_cand', P, 1160, 'Adds a record to the list of suspects, once.'],
+      ['sh', 'sysrr_search.sh', X, 1, 'The search: restore the checkpoint, replay with -F flips, keep a flip if the replay gets past the old divergence.'],
+      ['sh', 'attempt', X, 55, 'One restore and one replay with a given flip list; returns progress and new suspects.'],
+      ['sh', 'search loop', X, 86, 'Tries each suspect alone, then pairs of the six strongest. Prints FOUND -F … or BEST -F ….'],
+      ['sh', 'cleanup', X, 47, 'Puts back the CRIU config and the clock source, removes the copy.']
+    ]),
+
+    G('Tests', 'tests/: programs to record, and scripts that run the whole journey and compare copy with original.', [
+      ['test', 'run_all.sh', 'tests/run_all.sh', 1, 'The suite: 28 programs, one or two machines (REMOTE=), repeats (ROUNDS=), name filters.'],
+      ['test', 'run_crashes.sh', 'tests/run_crashes.sh', 1, 'Crash catalogue: 32 ways to die, each recorded and replayed to the same death.'],
+      ['test', 'test_replay.sh', 'tests/test_replay.sh', 1, 'The first end-to-end test, including the tampered-log check (tamper_log.py).'],
+      ['test', 'test_redis.sh · test_nginx.sh · test_memcached.sh · test_httpd.sh', 'tests/test_redis.sh', 1, 'Real servers: the copy must end with the same data or serve requests with the same threads.'],
+      ['test', '*_target.c', 'tests/mt_target.c', 1, 'Small target programs: threads, pools, forks, signals, files, network, races, crashes.']
+    ])
+  ];
+
+  /* ---- render ---- */
+  var tree = document.getElementById('tree'), q = document.getElementById('q'), countEl = document.getElementById('count');
+  var KIND = { bpf: 'eBPF', fn: 'fn', struct: 'struct', map: 'map', var: 'global', sh: 'script', test: 'test' };
+  var mode = 'concept', open = {};
+  try { open = JSON.parse(localStorage.getItem('sysrr-tree-open') || '{}') || {}; } catch (e) {}
+  function saveOpen() { try { localStorage.setItem('sysrr-tree-open', JSON.stringify(open)); } catch (e) {} }
+
+  function leaves(n, out) { if (Array.isArray(n)) out.push(n); else n.c.forEach(function (x) { leaves(x, out); }); return out; }
+  var ALL = []; TREE.forEach(function (n) { leaves(n, ALL); });
+
+  function byFile() {
+    var files = {}, order = [];
+    ALL.forEach(function (l) {
+      var f = l[2].indexOf('tests/') === 0 ? 'tests/' : l[2];
+      if (!files[f]) { files[f] = []; order.push(f); }
+      if (files[f].indexOf(l) < 0) files[f].push(l);
+    });
+    var DESC = { 'sysrr.bpf.c': 'The recorder\'s kernel half: eBPF programs and maps.', 'sysrr.c': 'The recorder\'s user half: loader and file writer.', 'sysrr.h': 'The log format, shared by every tool.', 'sysrr_dump.c': 'Prints and checks a log.', 'sysrr_replay.c': 'The replayer.', 'sysrr_search.sh': 'The order search.', 'tests/': 'The test suite.' };
+    return order.map(function (f) { return G(f, DESC[f] || '', files[f].slice().sort(function (a, b) { return a[3] - b[3]; })); });
+  }
+
+  function esc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;'); }
+  function hl(s, words) {
+    s = esc(s);
+    words.forEach(function (w) { if (w) s = s.replace(new RegExp('(' + w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', 'ig'), '<mark>$1</mark>'); });
+    return s;
+  }
+  function matches(l, words) {
+    var hay = (l[1] + ' ' + l[2] + ' ' + l[4]).toLowerCase();
+    return words.every(function (w) { return hay.indexOf(w) >= 0; });
+  }
+  function filter(n, words) {
+    if (Array.isArray(n)) return matches(n, words) ? n : null;
+    var groupHit = words.length && words.every(function (w) { return (n.g + ' ' + n.d).toLowerCase().indexOf(w) >= 0; });
+    var c = n.c.map(function (x) { return groupHit ? x : filter(x, words); }).filter(Boolean);
+    return c.length ? G(n.g, n.d, c) : null;
+  }
+
+  function render() {
+    var words = q.value.trim().toLowerCase().split(/\s+/).filter(Boolean);
+    var src = mode === 'concept' ? TREE : byFile();
+    var roots = words.length ? src.map(function (n) { return filter(n, words); }).filter(Boolean) : src;
+    var shown = 0;
+    tree.innerHTML = '';
+    function li(n, depth, path) {
+      var el = document.createElement('li');
+      el.className = 'depth' + depth;
+      if (Array.isArray(n)) {
+        shown++;
+        el.className += ' k-' + n[0];
+        el.innerHTML = '<div class="row"><span class="tog" aria-hidden="true">·</span><div class="body">' +
+          '<a class="name" href="' + GH + n[2] + '#L' + n[3] + '" target="_blank" rel="noopener">' + hl(n[1], words) + '</a>' +
+          '<span class="kind">' + KIND[n[0]] + '</span><span class="where">' + n[2] + ':' + n[3] + '</span>' +
+          '<span class="desc">' + hl(n[4], words) + '</span></div></div>';
+        return el;
+      }
+      var key = mode + '/' + path + n.g, isOpen = words.length ? true : (open[key] !== undefined ? open[key] : depth === 0);
+      var total = leaves(n, []).length;
+      var row = document.createElement('div');
+      row.className = 'row group'; row.tabIndex = 0;
+      row.setAttribute('role', 'button'); row.setAttribute('aria-expanded', String(isOpen));
+      row.innerHTML = '<span class="tog" aria-hidden="true">' + (isOpen ? '−' : '+') + '</span><div class="body"><span class="gname">' + hl(n.g, words) +
+        '</span><span class="n">' + total + '</span><span class="gdesc">' + hl(n.d, words) + '</span></div>';
+      el.appendChild(row);
+      var ul = document.createElement('ul');
+      ul.hidden = !isOpen;
+      n.c.forEach(function (x) { ul.appendChild(li(x, depth + 1, path + n.g + '/')); });
+      el.appendChild(ul);
+      var flip = function () {
+        var now = ul.hidden; ul.hidden = !now;
+        row.setAttribute('aria-expanded', String(now));
+        row.querySelector('.tog').textContent = now ? '−' : '+';
+        if (!words.length) { open[key] = now; saveOpen(); }
+      };
+      row.addEventListener('click', flip);
+      row.addEventListener('keydown', function (e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); flip(); } });
+      return el;
+    }
+    roots.forEach(function (n) { tree.appendChild(li(n, 0, '')); });
+    if (!roots.length) tree.innerHTML = '<li class="empty">Nothing matches "' + esc(q.value) + '". Try a function name or a word like lock, fd or signal.</li>';
+    countEl.textContent = words.length ? shown + ' of ' + ALL.length + ' items' : ALL.length + ' items';
+  }
+
+  function setAll(v) {
+    var src = mode === 'concept' ? TREE : byFile();
+    (function walk(list, path) {
+      list.forEach(function (n) { if (!Array.isArray(n)) { open[mode + '/' + path + n.g] = v; walk(n.c, path + n.g + '/'); } });
+    })(src, '');
+    saveOpen(); render();
+  }
+  q.addEventListener('input', render);
+  document.getElementById('open-all').addEventListener('click', function () { setAll(true); });
+  document.getElementById('close-all').addEventListener('click', function () { setAll(false); });
+  ['concept', 'file'].forEach(function (m) {
+    document.getElementById('by-' + m).addEventListener('click', function () {
+      mode = m;
+      document.getElementById('by-concept').setAttribute('aria-pressed', String(m === 'concept'));
+      document.getElementById('by-file').setAttribute('aria-pressed', String(m === 'file'));
+      render();
+    });
+  });
+  render();
+})();
+</script>

@@ -187,4 +187,5 @@ More detail:
 - `syscall-rr/REPLAY.md`: the replay side, test results and known limits
 - `syscall-rr/docs/`: guides (HTML). `tour.html` is the place to start: it
   walks through recording and replay one click at a time. `guide.html` and
-  `replay-guide.html` go into detail.
+  `replay-guide.html` go into detail. `code-tree.html` lists every function,
+  struct and map, grouped by what it does, with links to the source lines.
