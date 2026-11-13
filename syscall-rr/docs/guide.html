@@ -1,4 +1,4 @@
-<title>Inside sysrr</title>
+<title>sysrr Recorder Guide</title>
 <meta name="claude:viewport-fit-sides" content="cover">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -111,6 +111,36 @@ textarea:focus-visible { outline: 2px solid var(--kernel); outline-offset: 1px; 
 .model ul { margin: 6px 0 0; padding-left: 20px; }
 .result { padding: 14px 16px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); max-width: 78ch; }
 @media (prefers-reduced-motion: reduce) { .meter > span { transition: none; } }
+/* diagrams (from the October version of this guide) */
+figure { margin: 22px 0 26px; }
+.svgbox { background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 12px; overflow-x: auto; }
+.svgbox svg { display: block; width: 100%; height: auto; min-width: 640px; color: var(--ink); }
+figcaption { font-size: 14px; color: var(--muted); margin-top: 8px; max-width: 72ch; }
+svg text { font-family: var(--f-body); font-size: 12px; fill: currentColor; }
+svg .t-name { font-family: var(--f-mono); font-weight: 600; font-size: 13px; }
+svg .t-sub { font-size: 11px; fill: var(--muted); }
+svg .t-lbl { font-size: 11px; fill: var(--muted); paint-order: stroke; stroke: var(--surface); stroke-width: 4px; stroke-linejoin: round; }
+svg .t-k { fill: var(--kernel); }
+svg .t-u { fill: var(--user); }
+svg .box-k { fill: var(--kernel-soft); stroke: var(--kernel); stroke-width: 1.5; }
+svg .box-u { fill: var(--user-soft); stroke: var(--user); stroke-width: 1.5; }
+svg .box-m { fill: var(--surface); stroke: currentColor; stroke-width: 1.2; }
+svg .box-b { fill: var(--surface); stroke: var(--muted); stroke-width: 1.2; stroke-dasharray: 5 3; }
+svg .band { fill: var(--user-soft); stroke: none; }
+svg .ln { stroke: currentColor; stroke-width: 1.3; fill: none; }
+svg .ln-k { stroke: var(--kernel); stroke-width: 1.5; fill: none; }
+svg .ln-u { stroke: var(--user); stroke-width: 1.5; fill: none; }
+svg .ln-mute { stroke: var(--muted); stroke-width: 1; fill: none; }
+svg .ah { fill: currentColor; }
+svg .ah-k { fill: var(--kernel); }
+svg .ah-u { fill: var(--user); }
+/* the bar shared by the three sysrr guides */
+.suite { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 16px; font-size: 14px; padding-bottom: 12px; margin-bottom: 22px; border-bottom: 1px solid var(--line); }
+.suite b { font: 600 12px var(--f-display); letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
+.suite a { color: var(--muted); text-decoration: none; }
+.suite a:hover, .suite a:focus-visible { color: var(--kernel); text-decoration: underline; }
+.suite a[aria-current="page"] { color: var(--ink); font-weight: 600; }
+.suite small { color: var(--muted); font-size: 12.5px; }
 </style>
 
 <div class="wrap">
@@ -130,8 +160,9 @@ textarea:focus-visible { outline: 2px solid var(--kernel); outline-offset: 1px; 
 
 <main>
 <header>
-  <div class="eyebrow">syscall-rr · record side</div>
-  <h1>Inside sysrr</h1>
+  <nav class="suite" aria-label="sysrr guides"><b>sysrr guides</b><a href="https://claude.ai/artifact/YJn3muzGnxV1wMH1Sd2ycT">Walkthrough <small>· start here</small></a><a href="https://claude.ai/artifact/6ZebwgVF4vFLJRKdhWRsFA" aria-current="page">Recorder Guide <small>· sysrr, sysrr_dump</small></a><a href="https://claude.ai/artifact/BrqbnVeMN3qqisG1nxenKb">Replay Guide <small>· sysrr_replay, search</small></a></nav>
+  <div class="eyebrow">sysrr · record side</div>
+  <h1>sysrr Recorder Guide</h1>
   <p class="lede">sysrr is a flight recorder for one container process. It writes down every syscall the process makes and every byte that goes in or out. Later, <a href="https://claude.ai/artifact/BrqbnVeMN3qqisG1nxenKb">sysrr_replay</a> uses that log to relive what happened. New to the tool? Start with the <a href="https://claude.ai/artifact/YJn3muzGnxV1wMH1Sd2ycT">walkthrough</a>.</p>
 </header>
 
@@ -175,6 +206,110 @@ read(3, buf, 40000)     → DATA(16 KiB)  DATA(16 KiB)  DATA(7 KiB)  SYSCALL</pr
     <li class="u"><div><span class="who">User space</span>Every 10 ms, <code>sysrr.c</code> empties the ring into the log file. It never looks inside.</div></li>
   </ol>
   <div class="key"><p><strong>In short:</strong> settings go down through <code>.rodata</code> before anything runs. Notes wait in <code>tstate</code> between entry and exit. Bytes pass through <code>scratch</code> and travel up through the ring to the file.</p></div>
+  <figure>
+    <div class="svgbox">
+    <svg viewBox="0 0 860 500" role="img" aria-label="Data flow: sysrr.c configures .rodata and seeds targets before load; sys_enter writes per-thread state to tstate, which sys_exit reads; sys_exit stages chunks in scratch and writes records to the events ring buffer, which sysrr.c polls; handle_ptrace updates .bss and the target's tstate; on_fork adds to targets; lost is summed by sysrr.c at exit.">
+      <defs>
+        <marker id="a1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah"/></marker>
+        <marker id="a1k" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah-k"/></marker>
+        <marker id="a1u" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah-u"/></marker>
+      </defs>
+      <!-- column headings -->
+      <text x="110" y="24" text-anchor="middle" class="t-u" style="font-weight:600">USER SPACE</text>
+      <text x="430" y="24" text-anchor="middle" style="font-weight:600">MAPS (shared memory)</text>
+      <text x="750" y="24" text-anchor="middle" class="t-k" style="font-weight:600">BPF PROGRAMS (kernel)</text>
+
+      <!-- user space -->
+      <rect x="20" y="40" width="180" height="428" rx="6" class="box-u"/>
+      <text x="110" y="250" text-anchor="middle" class="t-name t-u">sysrr.c</text>
+      <text x="110" y="268" text-anchor="middle" class="t-sub">loader + consumer</text>
+      <text x="110" y="440" text-anchor="middle" class="t-sub">fwrite() → rec.log</text>
+
+      <!-- maps -->
+      <rect x="330" y="40" width="200" height="44" rx="4" class="box-m"/>
+      <text x="430" y="58" text-anchor="middle" class="t-name">.rodata</text>
+      <text x="430" y="75" text-anchor="middle" class="t-sub">config, constant for all progs</text>
+
+      <rect x="330" y="104" width="200" height="44" rx="4" class="box-m"/>
+      <text x="430" y="122" text-anchor="middle" class="t-name">targets</text>
+      <text x="430" y="139" text-anchor="middle" class="t-sub">HASH · tgids (only with -f)</text>
+
+      <rect x="330" y="168" width="200" height="44" rx="4" class="box-m"/>
+      <text x="430" y="186" text-anchor="middle" class="t-name">.bss</text>
+      <text x="430" y="203" text-anchor="middle" class="t-sub">seq_ctr · gen · seized_cnt</text>
+
+      <rect x="330" y="232" width="200" height="44" rx="4" class="box-m"/>
+      <text x="430" y="250" text-anchor="middle" class="t-name">tstate</text>
+      <text x="430" y="267" text-anchor="middle" class="t-sub">TASK_STORAGE · one per thread</text>
+
+      <rect x="330" y="296" width="200" height="44" rx="4" class="box-m"/>
+      <text x="430" y="314" text-anchor="middle" class="t-name">scratch</text>
+      <text x="430" y="331" text-anchor="middle" class="t-sub">PERCPU_ARRAY · 16 KiB staging</text>
+
+      <rect x="330" y="360" width="200" height="44" rx="4" class="box-m"/>
+      <text x="430" y="378" text-anchor="middle" class="t-name">events</text>
+      <text x="430" y="395" text-anchor="middle" class="t-sub">RINGBUF · 64 MiB</text>
+
+      <rect x="330" y="424" width="200" height="44" rx="4" class="box-m"/>
+      <text x="430" y="442" text-anchor="middle" class="t-name">lost</text>
+      <text x="430" y="459" text-anchor="middle" class="t-sub">PERCPU_ARRAY · counter</text>
+
+      <!-- programs -->
+      <rect x="660" y="96" width="180" height="44" rx="4" class="box-k"/>
+      <text x="750" y="114" text-anchor="middle" class="t-name t-k">on_fork</text>
+      <text x="750" y="131" text-anchor="middle" class="t-sub">sched_process_fork</text>
+
+      <rect x="660" y="168" width="180" height="44" rx="4" class="box-k"/>
+      <text x="750" y="186" text-anchor="middle" class="t-name t-k">handle_ptrace</text>
+      <text x="750" y="203" text-anchor="middle" class="t-sub">part of sys_enter</text>
+
+      <rect x="660" y="240" width="180" height="44" rx="4" class="box-k"/>
+      <text x="750" y="258" text-anchor="middle" class="t-name t-k">sys_enter</text>
+      <text x="750" y="275" text-anchor="middle" class="t-sub">every syscall, every process</text>
+
+      <rect x="660" y="330" width="180" height="44" rx="4" class="box-k"/>
+      <text x="750" y="348" text-anchor="middle" class="t-name t-k">sys_exit</text>
+      <text x="750" y="365" text-anchor="middle" class="t-sub">every syscall, every process</text>
+
+      <!-- user <-> maps -->
+      <line x1="200" y1="62" x2="328" y2="62" class="ln-u" marker-end="url(#a1u)"/>
+      <text x="264" y="56" text-anchor="middle" class="t-lbl">sets, before load</text>
+      <line x1="200" y1="126" x2="328" y2="126" class="ln-u" marker-end="url(#a1u)"/>
+      <text x="264" y="120" text-anchor="middle" class="t-lbl">seeds target pid</text>
+      <line x1="330" y1="190" x2="202" y2="190" class="ln-u" marker-end="url(#a1u)"/>
+      <text x="264" y="184" text-anchor="middle" class="t-lbl">reads gen at exit</text>
+      <line x1="330" y1="382" x2="202" y2="382" class="ln-u" marker-end="url(#a1u)"/>
+      <text x="264" y="376" text-anchor="middle" class="t-lbl">poll every 10 ms</text>
+      <line x1="330" y1="446" x2="202" y2="446" class="ln-u" marker-end="url(#a1u)"/>
+      <text x="264" y="440" text-anchor="middle" class="t-lbl">summed at exit</text>
+
+      <!-- programs -> maps -->
+      <line x1="660" y1="118" x2="532" y2="126" class="ln-k" marker-end="url(#a1k)"/>
+      <text x="596" y="113" text-anchor="middle" class="t-lbl">adds child tgid</text>
+      <line x1="660" y1="186" x2="532" y2="186" class="ln-k" marker-end="url(#a1k)"/>
+      <text x="596" y="180" text-anchor="middle" class="t-lbl">seized_cnt, gen++</text>
+      <line x1="660" y1="204" x2="532" y2="244" class="ln-k" marker-end="url(#a1k)"/>
+      <text x="612" y="214" text-anchor="middle" class="t-lbl">seized flag</text>
+      <line x1="660" y1="262" x2="532" y2="262" class="ln-k" marker-end="url(#a1k)"/>
+      <text x="596" y="276" text-anchor="middle" class="t-lbl">seq, ts, args, gen</text>
+      <line x1="530" y1="272" x2="658" y2="336" class="ln-k" marker-end="url(#a1k)"/>
+      <text x="566" y="303" text-anchor="middle" class="t-lbl">read</text>
+      <line x1="660" y1="350" x2="532" y2="320" class="ln-k" marker-end="url(#a1k)"/>
+      <text x="626" y="330" text-anchor="middle" class="t-lbl">stage</text>
+      <line x1="430" y1="340" x2="430" y2="358" class="ln" marker-end="url(#a1)"/>
+      <text x="438" y="353" class="t-lbl">copied in</text>
+      <line x1="660" y1="362" x2="532" y2="380" class="ln-k" marker-end="url(#a1k)"/>
+      <text x="598" y="392" text-anchor="middle" class="t-lbl">DATA + SYSCALL</text>
+      <line x1="660" y1="370" x2="532" y2="442" class="ln-k" marker-end="url(#a1k)"/>
+      <text x="620" y="424" text-anchor="middle" class="t-lbl">ring full</text>
+
+      <!-- sys_enter calls handle_ptrace -->
+      <line x1="750" y1="240" x2="750" y2="214" class="ln-k" marker-end="url(#a1k)"/>
+      <text x="742" y="231" text-anchor="end" class="t-lbl">if nr == ptrace</text>
+    </svg>
+    </div>
+    <figcaption>Only three arrows touch user space while recording runs: the ring buffer being drained, plus two reads at shutdown. Everything else stays inside the kernel.</figcaption>
+  </figure>
 </section>
 
 <section id="when">
@@ -206,6 +341,45 @@ read(3, buf, 40000)     → DATA(16 KiB)  DATA(16 KiB)  DATA(7 KiB)  SYSCALL</pr
     </tbody>
   </table></div>
   <p>Only <code>events</code> is read while recording runs. <code>lost</code> and <code>gen</code> are read once at the end.</p>
+  <p>Why bytes go through <code>scratch</code> while a <code>SYSCALL</code> record is written straight into the ring:</p>
+  <figure>
+    <div class="svgbox">
+    <svg viewBox="0 0 860 250" role="img" aria-label="Two paths into the ring buffer: DATA chunks are read from user memory into the per-CPU scratch buffer, then copied into the ring with bpf_ringbuf_output; the fixed-size SYSCALL record is reserved directly in the ring, filled in place and submitted.">
+      <defs>
+        <marker id="a5" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah"/></marker>
+        <marker id="a5k" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah-k"/></marker>
+      </defs>
+      <text x="20" y="22" class="t-sub">DATA path (variable size n, 1…16384)</text>
+      <rect x="20" y="36" width="170" height="60" rx="4" class="box-u"/>
+      <text x="105" y="62" text-anchor="middle" class="t-name t-u">user buffer</text>
+      <text x="105" y="80" text-anchor="middle" class="t-sub">target's memory</text>
+
+      <rect x="330" y="36" width="200" height="60" rx="4" class="box-k"/>
+      <text x="430" y="62" text-anchor="middle" class="t-name t-k">scratch (per-CPU)</text>
+      <text x="430" y="80" text-anchor="middle" class="t-sub">32 B header + ≤16 KiB</text>
+
+      <rect x="660" y="36" width="180" height="190" rx="4" class="box-k"/>
+      <text x="750" y="58" text-anchor="middle" class="t-name t-k">events ring</text>
+      <rect x="676" y="72" width="148" height="34" rx="3" class="box-m"/>
+      <text x="750" y="94" text-anchor="middle" class="t-sub">REC_DATA, 32+n B</text>
+      <rect x="676" y="172" width="148" height="34" rx="3" class="box-m"/>
+      <text x="750" y="194" text-anchor="middle" class="t-sub">REC_SYSCALL, 120 B</text>
+
+      <line x1="190" y1="66" x2="328" y2="66" class="ln" marker-end="url(#a5)"/>
+      <text x="259" y="58" text-anchor="middle" class="t-lbl">probe_read_user</text>
+      <line x1="530" y1="66" x2="674" y2="86" class="ln-k" marker-end="url(#a5k)"/>
+      <text x="600" y="62" text-anchor="middle" class="t-lbl">output(32+n): copy</text>
+
+      <text x="20" y="152" class="t-sub">SYSCALL path (fixed size)</text>
+      <rect x="330" y="160" width="200" height="60" rx="4" class="box-m"/>
+      <text x="430" y="186" text-anchor="middle" class="t-name">tstate + regs + ret</text>
+      <text x="430" y="204" text-anchor="middle" class="t-sub">a few fixed fields</text>
+      <line x1="530" y1="189" x2="674" y2="189" class="ln-k" marker-end="url(#a5k)"/>
+      <text x="602" y="181" text-anchor="middle" class="t-lbl">reserve(120), fill, submit</text>
+    </svg>
+    </div>
+    <figcaption>Fixed-size records are written straight into ring memory with no copy (<code>emit_syscall</code>, sysrr.bpf.c:613). Variable-size ones are built in scratch, then copied in (<code>chunk_cb</code>, sysrr.bpf.c:153).</figcaption>
+  </figure>
 </section>
 
 <section id="seq">
@@ -213,6 +387,53 @@ read(3, buf, 40000)     → DATA(16 KiB)  DATA(16 KiB)  DATA(7 KiB)  SYSCALL</pr
   <p>All CPUs share one ring, so records of different threads get mixed:</p>
   <pre>DATA #41   SYSCALL #57   SYSCALL #41
            <span class="dim">^ another thread finished here</span></pre>
+  <figure>
+    <div class="svgbox">
+    <svg viewBox="0 0 860 270" role="img" aria-label="Ring buffer order with records from two threads interleaved; sysrr_dump parks DATA records and attaches them to the SYSCALL record with the same seq when it arrives.">
+      <defs>
+        <marker id="a2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah"/></marker>
+        <marker id="a2k" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah-k"/></marker>
+      </defs>
+      <text x="20" y="24" style="font-weight:600">ring buffer = file order →</text>
+      <text x="840" y="24" text-anchor="end" class="t-sub">teal: thread 101 on CPU 2 · dashed: thread 102 on CPU 5</text>
+
+      <rect x="20" y="40" width="130" height="56" rx="4" class="box-k"/>
+      <text x="85" y="63" text-anchor="middle" class="t-name">DATA s41</text>
+      <text x="85" y="82" text-anchor="middle" class="t-sub">read buf, chunk 0</text>
+      <rect x="158" y="40" width="130" height="56" rx="4" class="box-k"/>
+      <text x="223" y="63" text-anchor="middle" class="t-name">DATA s41</text>
+      <text x="223" y="82" text-anchor="middle" class="t-sub">read buf, chunk 1</text>
+      <rect x="296" y="40" width="130" height="56" rx="4" class="box-b"/>
+      <text x="361" y="63" text-anchor="middle" class="t-name">SYSCALL s57</text>
+      <text x="361" y="82" text-anchor="middle" class="t-sub">getpid, ndata=0</text>
+      <rect x="434" y="40" width="130" height="56" rx="4" class="box-k"/>
+      <text x="499" y="63" text-anchor="middle" class="t-name">SYSCALL s41</text>
+      <text x="499" y="82" text-anchor="middle" class="t-sub">read, ndata=2</text>
+      <rect x="572" y="40" width="130" height="56" rx="4" class="box-b"/>
+      <text x="637" y="63" text-anchor="middle" class="t-name">DATA s58</text>
+      <text x="637" y="82" text-anchor="middle" class="t-sub">write buf</text>
+      <rect x="710" y="40" width="130" height="56" rx="4" class="box-b"/>
+      <text x="775" y="63" text-anchor="middle" class="t-name">SYSCALL s58</text>
+      <text x="775" y="82" text-anchor="middle" class="t-sub">write, ndata=1</text>
+
+      <!-- parking lot -->
+      <rect x="20" y="176" width="406" height="56" rx="4" class="box-m"/>
+      <text x="223" y="199" text-anchor="middle" class="t-name">parked: s41 #0, s41 #1</text>
+      <text x="223" y="218" text-anchor="middle" class="t-sub">sysrr_dump's pending list (DATA waiting for its SYSCALL)</text>
+
+      <line x1="85" y1="96" x2="85" y2="174" class="ln" marker-end="url(#a2)"/>
+      <line x1="223" y1="96" x2="223" y2="174" class="ln" marker-end="url(#a2)"/>
+      <text x="154" y="140" text-anchor="middle" class="t-lbl">park</text>
+      <line x1="361" y1="96" x2="361" y2="150" class="ln-mute"/>
+      <text x="361" y="164" text-anchor="middle" class="t-lbl">nothing parked for s57: print now</text>
+      <path d="M499,96 L499,204 L428,204" class="ln-k" marker-end="url(#a2k)"/>
+      <text x="507" y="150" class="t-lbl">take every parked s41, print, check 2 = ndata</text>
+      <line x1="637" y1="96" x2="637" y2="130" class="ln-mute"/>
+      <text x="706" y="124" text-anchor="middle" class="t-lbl">s58 parks, then commits</text>
+    </svg>
+    </div>
+    <figcaption>Thread 102's <code>getpid</code> finished on another CPU while thread 101 was between its data chunks and its commit, so <code>SYSCALL s57</code> landed in the middle. Matching by seq makes that harmless.</figcaption>
+  </figure>
   <p>That's fine. <code>sysrr_dump</code> holds <code>DATA</code> records aside until the <code>SYSCALL</code> with the same <code>seq</code> arrives. Two rules make this safe:</p>
   <ul>
     <li><strong>A syscall's DATA comes before its SYSCALL.</strong> One thread writes them in that order, and the ring keeps the order of requests.</li>
@@ -230,6 +451,56 @@ read(3, buf, 40000)     → DATA(16 KiB)  DATA(16 KiB)  DATA(7 KiB)  SYSCALL</pr
     <li class="t"><div><span class="who">While seized</span>CRIU runs its own code inside the target. Those syscalls get the flag <code>F_DUMP</code>, so replay ignores them.</div></li>
     <li class="u"><div><span class="who">DETACH</span>CRIU leaves. sysrr subtracts 1. At 0, <code>gen</code> goes up by one.</div></li>
   </ol>
+  <figure>
+    <div class="svgbox">
+    <svg viewBox="0 0 860 230" role="img" aria-label="Detection chain: on every syscall of any process, check nr equals ptrace, request is SEIZE, ATTACH or DETACH, the pid resolves to a task whose tgid is a target; only then update the seized state, the counter, the generation and emit a marker.">
+      <defs>
+        <marker id="a3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah"/></marker>
+        <marker id="a3k" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah-k"/></marker>
+      </defs>
+      <rect x="10" y="30" width="150" height="70" rx="4" class="box-m"/>
+      <text x="85" y="58" text-anchor="middle" style="font-weight:600">any process</text>
+      <text x="85" y="76" text-anchor="middle" class="t-sub">enters a syscall</text>
+
+      <rect x="180" y="30" width="150" height="70" rx="4" class="box-m"/>
+      <text x="255" y="58" text-anchor="middle" class="t-name">nr == ptrace?</text>
+      <text x="255" y="76" text-anchor="middle" class="t-sub">1 compare, line 648</text>
+
+      <rect x="350" y="30" width="150" height="70" rx="4" class="box-m"/>
+      <text x="425" y="52" text-anchor="middle" style="font-weight:600">request is</text>
+      <text x="425" y="70" text-anchor="middle" class="t-name">SEIZE / ATTACH</text>
+      <text x="425" y="88" text-anchor="middle" class="t-name">/ DETACH?</text>
+
+      <rect x="520" y="30" width="150" height="70" rx="4" class="box-m"/>
+      <text x="595" y="52" text-anchor="middle" class="t-name">bpf_task_from_pid</text>
+      <text x="595" y="70" text-anchor="middle" style="font-weight:600">task's tgid is</text>
+      <text x="595" y="88" text-anchor="middle" style="font-weight:600">a target?</text>
+
+      <rect x="690" y="30" width="160" height="70" rx="4" class="box-k"/>
+      <text x="770" y="52" text-anchor="middle" class="t-k" style="font-weight:600">update state</text>
+      <text x="770" y="70" text-anchor="middle" class="t-sub">seized flag, seized_cnt,</text>
+      <text x="770" y="88" text-anchor="middle" class="t-sub">gen, marker record</text>
+
+      <line x1="160" y1="65" x2="178" y2="65" class="ln" marker-end="url(#a3)"/>
+      <line x1="330" y1="65" x2="348" y2="65" class="ln" marker-end="url(#a3)"/>
+      <text x="339" y="58" text-anchor="middle" class="t-lbl">yes</text>
+      <line x1="500" y1="65" x2="518" y2="65" class="ln" marker-end="url(#a3)"/>
+      <text x="509" y="58" text-anchor="middle" class="t-lbl">yes</text>
+      <line x1="670" y1="65" x2="688" y2="65" class="ln-k" marker-end="url(#a3k)"/>
+      <text x="679" y="58" text-anchor="middle" class="t-lbl">yes</text>
+
+      <rect x="180" y="160" width="490" height="44" rx="4" class="box-b"/>
+      <text x="425" y="187" text-anchor="middle">not about our target → go on to the normal target filter</text>
+      <line x1="255" y1="100" x2="255" y2="158" class="ln-mute" marker-end="url(#a3)"/>
+      <text x="263" y="134" class="t-lbl">no (99.9% of syscalls)</text>
+      <line x1="425" y1="100" x2="425" y2="158" class="ln-mute" marker-end="url(#a3)"/>
+      <text x="433" y="134" class="t-lbl">no (PEEKDATA, GETREGS…)</text>
+      <line x1="595" y1="100" x2="595" y2="158" class="ln-mute" marker-end="url(#a3)"/>
+      <text x="603" y="134" class="t-lbl">no (gdb on another pid)</text>
+    </svg>
+    </div>
+    <figcaption>The check runs on the <em>caller's</em> syscall: the process calling ptrace is criu, not the target. That's why it sits above the target filter at sysrr.bpf.c:648. Otherwise criu's syscalls would be discarded before anyone looked at them.</figcaption>
+  </figure>
   <p><strong>Generation N is everything after checkpoint N</strong>, which is exactly what a restore of that checkpoint must replay.</p>
   <ul>
     <li>The check sits before the target filter, because the process calling <code>ptrace</code> is CRIU, not the target.</li>
@@ -237,6 +508,35 @@ read(3, buf, 40000)     → DATA(16 KiB)  DATA(16 KiB)  DATA(7 KiB)  SYSCALL</pr
     <li>Any tracer counts: attaching gdb looks like a checkpoint too.</li>
     <li>A sleep interrupted by the checkpoint gets <code>-EINTR</code> in both the live and the restored process, so both continue with the next syscall.</li>
   </ul>
+  <h3>What it looked like in a real run</h3>
+  <figure>
+    <div class="svgbox">
+    <svg viewBox="0 0 860 200" role="img" aria-label="Timeline from the test run: clock_nanosleep interrupted at 1.921 s, SEIZE at 2.006 s, 356 parasite syscalls while seized, DETACH at 2.111 s, generation 1 begins with read at 2.1113 s.">
+      <rect x="379" y="60" width="336" height="50" class="band"/>
+      <text x="547" y="80" text-anchor="middle" class="t-u" style="font-weight:600">CRIU holds the thread</text>
+      <text x="547" y="98" text-anchor="middle" class="t-sub">356 syscalls tagged criu-parasite (#31–#386)</text>
+      <line x1="40" y1="130" x2="840" y2="130" class="ln"/>
+      <g class="t-sub">
+        <line x1="200" y1="126" x2="200" y2="134" class="ln"/><text x="200" y="150" text-anchor="middle" class="t-sub">1.95 s</text>
+        <line x1="360" y1="126" x2="360" y2="134" class="ln"/><text x="360" y="150" text-anchor="middle" class="t-sub">2.00 s</text>
+        <line x1="520" y1="126" x2="520" y2="134" class="ln"/><text x="520" y="150" text-anchor="middle" class="t-sub">2.05 s</text>
+        <line x1="680" y1="126" x2="680" y2="134" class="ln"/><text x="680" y="150" text-anchor="middle" class="t-sub">2.10 s</text>
+        <line x1="840" y1="126" x2="840" y2="134" class="ln"/><text x="840" y="150" text-anchor="middle" class="t-sub">2.15 s</text>
+      </g>
+      <line x1="107" y1="40" x2="107" y2="130" class="ln-mute"/>
+      <text x="107" y="34" text-anchor="middle" class="t-lbl">#30 clock_nanosleep = −516</text>
+      <line x1="379" y1="40" x2="379" y2="130" class="ln-u"/>
+      <text x="379" y="34" text-anchor="middle" class="t-lbl">SEIZE 2.006</text>
+      <line x1="715" y1="40" x2="715" y2="130" class="ln-u"/>
+      <text x="700" y="34" text-anchor="end" class="t-lbl">DETACH 2.111 → gen 1</text>
+      <circle cx="716" cy="130" r="4" style="fill: var(--kernel)"/>
+      <text x="726" y="34" class="t-lbl">#387 read</text>
+      <text x="60" y="182" class="t-sub">gen 0 (before the checkpoint)</text>
+      <text x="840" y="182" text-anchor="end" class="t-k" style="font-weight:600">gen 1 = replay log</text>
+    </svg>
+    </div>
+    <figcaption>Drawn to scale from a test recording made on 2026-10-21. The sleep that was interrupted gets <code>-EINTR</code> from CRIU, so generation 1 starts directly with the next <code>read</code>, in both the live process and a restored one.</figcaption>
+  </figure>
 </section>
 
 <section id="threads">

@@ -136,6 +136,32 @@ dl.gloss { display: grid; grid-template-columns: minmax(110px, auto) minmax(0, 1
 dl.gloss dt { font: 600 15px var(--f-mono); color: var(--kernel); }
 dl.gloss dd { margin: 0; }
 @media (max-width: 560px) { dl.gloss { grid-template-columns: 1fr; gap: 2px; } dl.gloss dd { margin-bottom: 10px; } }
+
+/* "in the code": every step names the functions that do it, with a link to the line */
+.incode { margin-top: 12px; border-top: 1px dashed var(--line); padding-top: 10px; display: grid; gap: 6px; }
+.incode > .lbl, .codebox > .lbl { font: 600 11px var(--f-display); letter-spacing: .1em; text-transform: uppercase; color: var(--user); }
+.ref { display: grid; grid-template-columns: minmax(0, auto) minmax(0, 1fr); gap: 2px 12px; align-items: baseline; font-size: 15px; }
+.ref a { font: 600 13.5px var(--f-mono); text-decoration: none; color: var(--user); overflow-wrap: anywhere; }
+.ref a:hover, .ref a:focus-visible { text-decoration: underline; }
+.ref a .file { font-weight: 400; color: var(--muted); }
+.ref span { color: var(--ink); }
+@media (max-width: 560px) { .ref { grid-template-columns: 1fr; } .ref span { margin-bottom: 6px; } }
+.codebox { background: var(--user-soft); border-radius: 6px; padding: 12px 16px; margin: 14px 0 18px; max-width: 76ch; display: grid; gap: 6px; }
+.node[role="button"] { cursor: pointer; }
+.node[role="button"]:hover { border-color: var(--c); }
+.node[role="button"]:focus-visible { outline: 2px solid var(--kernel); outline-offset: 2px; }
+.node code { background: none; padding: 0; }
+.flowlane > .boxes { position: relative; }
+.arrow { flex: 0 0 auto; align-self: center; color: var(--muted); font: 600 15px var(--f-mono); }
+@media (max-width: 560px) { .arrow { display: none; } }
+td a code, td code { white-space: nowrap; }
+/* the bar shared by the three sysrr guides */
+.suite { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 16px; font-size: 14px; padding-bottom: 12px; margin-bottom: 22px; border-bottom: 1px solid var(--line); }
+.suite b { font: 600 12px var(--f-display); letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
+.suite a { color: var(--muted); text-decoration: none; }
+.suite a:hover, .suite a:focus-visible { color: var(--kernel); text-decoration: underline; }
+.suite a[aria-current="page"] { color: var(--ink); font-weight: 600; }
+.suite small { color: var(--muted); font-size: 12.5px; }
 </style>
 
 <div class="wrap">
@@ -148,15 +174,18 @@ dl.gloss dd { margin: 0; }
   <a href="#decide">Fake or run</a>
   <a href="#threads">Several threads</a>
   <a href="#works">What works today</a>
+  <a href="#code">The code map</a>
   <a href="#use">Using it</a>
   <a href="#words">Words</a>
 </nav>
 
 <main>
 <header>
+  <nav class="suite" aria-label="sysrr guides"><b>sysrr guides</b><a href="https://claude.ai/artifact/YJn3muzGnxV1wMH1Sd2ycT" aria-current="page">Walkthrough <small>· start here</small></a><a href="https://claude.ai/artifact/6ZebwgVF4vFLJRKdhWRsFA">Recorder Guide <small>· sysrr, sysrr_dump</small></a><a href="https://claude.ai/artifact/BrqbnVeMN3qqisG1nxenKb">Replay Guide <small>· sysrr_replay, search</small></a></nav>
   <div class="eyebrow">sysrr · start here</div>
   <h1>sysrr Walkthrough</h1>
   <p class="lede">sysrr lets a copy of a running program live through the same events as the original. This page shows how, one click at a time. No kernel knowledge is assumed.</p>
+  <p style="margin-top: 14px; font-size: 15px; color: var(--muted)">Each step also names the functions that do it, under <span style="color: var(--user); font-weight: 600">In the code</span>. The links open that line on GitHub, at commit <code>176ed3e</code>, so the line numbers stay right. <a href="#code">The code map</a> puts all the pieces on one diagram.</p>
 </header>
 
 <section id="why">
@@ -231,7 +260,7 @@ dl.gloss dd { margin: 0; }
   </div>
   <p>Which bytes get copied depends on the direction. Data the kernel hands to the program (a <code>read</code>) is copied when the call leaves, because that's when it exists. Data the program hands to the kernel (a <code>write</code>, a file name) is copied when the call enters. The first kind is what a replay must give back. The second kind is what a replay uses to check that the copy is still on the same path.</p>
   <p>The cost: a program that does nothing but tiny syscalls runs about 2.8 times slower while recorded. Ordinary programs lose far less. Other programs on the machine pay about 0.03 microseconds per syscall.</p>
-  <p>More detail: <a href="https://claude.ai/artifact/6ZebwgVF4vFLJRKdhWRsFA">Inside sysrr</a>.</p>
+  <p>More detail: <a href="https://claude.ai/artifact/6ZebwgVF4vFLJRKdhWRsFA">sysrr Recorder Guide</a>.</p>
 </section>
 
 <section id="gens">
@@ -282,7 +311,7 @@ dl.gloss dd { margin: 0; }
     <div class="caption" aria-live="polite"></div>
   </div>
   <p>The check is the useful part. A copy whose state has gone wrong, even by one byte, sooner or later hands the kernel something the original didn't. Replay stops there, shows both versions, and lists the thread's last calls. That report is the starting point for finding the cause.</p>
-  <p>More detail: <a href="https://claude.ai/artifact/BrqbnVeMN3qqisG1nxenKb">Inside sysrr_replay</a>.</p>
+  <p>More detail: <a href="https://claude.ai/artifact/BrqbnVeMN3qqisG1nxenKb">sysrr Replay Guide</a>.</p>
 </section>
 
 <section id="decide">
@@ -310,6 +339,7 @@ dl.gloss dd { margin: 0; }
     </div>
     <div class="outcome" id="order-out" aria-live="polite"></div>
   </div>
+  <div class="codebox" data-refs="order"></div>
   <p>With <code>-T</code>, replay lets only one thread run program code at a time. It decides the order from what the log does have: the exact order in which threads entered their syscalls, and the calls threads make around locks. That is a well-founded guess, not a fact from the log.</p>
   <p>How good is the guess? Usually right. It goes wrong where two threads ran code at the same time and both touched the same memory, for example two workers taking jobs from one queue. Replay then stops at the first value that came out differently and says so.</p>
   <h3>When the guess is wrong: searching</h3>
@@ -323,6 +353,7 @@ dl.gloss dd { margin: 0; }
     </div>
     <div class="caption" id="search-cap" aria-live="polite"></div>
   </div>
+  <div class="codebox" data-refs="search"></div>
   <p>The order it finds fits everything in the log, but the log can't prove it's the order that happened live: other orders might fit too. What the search does prove is where the program depended on which thread came first. If you're hunting a race bug, those spots are where to look.</p>
 </section>
 
@@ -344,6 +375,54 @@ dl.gloss dd { margin: 0; }
     </tbody>
   </table></div>
   <p>“Reported” means the replay ends by itself with a message that names the problem. A replay that hangs, or claims success when the copy differs, counts as a bug in sysrr.</p>
+</section>
+
+<section id="code">
+  <h2>The code map</h2>
+  <p>Here is the whole tool on one diagram. Each box is a function or a piece of data in the source, and its lane is the file it lives in. Click Next to follow one <code>read</code> from the moment the program makes it until a copy gets the same answer on another machine. You can also click any box to jump to its step.</p>
+  <div class="demo" data-stepper="code" data-jump>
+    <div class="lanes">
+      <div class="lane flowlane"><div class="who k">sysrr.bpf.c<br>in the kernel</div><div class="boxes">
+        <div class="node k" data-n="enter"><b>sys_enter</b><small>seq, args → task_state</small></div>
+        <div class="node k" data-n="cap"><b>capture_*</b><small>which bytes to copy</small></div>
+        <div class="node k" data-n="emit"><b>emit_buf · emit_syscall</b><small>rec_data, rec_syscall</small></div>
+        <div class="node k" data-n="ptr"><b>handle_ptrace</b><small>sees CRIU, gen++</small></div>
+        <div class="node k" data-n="ring"><b>events</b><small>ring buffer map</small></div>
+      </div></div>
+      <div class="lane flowlane"><div class="who u">sysrr.c</div><div class="boxes">
+        <div class="node u" data-n="rmain"><b>main</b><small>load, fill targets</small></div>
+        <div class="node u" data-n="hrec"><b>handle_rec</b><small>ring → file</small></div>
+      </div></div>
+      <div class="lane flowlane"><div class="who f">sysrr.h<br>the log</div><div class="boxes">
+        <div class="node f" data-n="log"><b>rec.log</b><small>sysrr_file_hdr + records</small></div>
+      </div></div>
+      <div class="lane flowlane"><div class="who u">sysrr_replay.c</div><div class="boxes">
+        <div class="node u" data-n="load"><b>load</b><small>ent per call, thr per thread</small></div>
+        <div class="node u" data-n="order"><b>order_serial</b><small>-T: the turn order</small></div>
+        <div class="node u" data-n="attach"><b>attach_listener</b><small>plants seccomp</small></div>
+        <div class="node u" data-n="sup"><b>supervise · handle</b><small>one parked call</small></div>
+        <div class="node u" data-n="ans"><b>inject_outputs · respond</b><small>the answer</small></div>
+        <div class="node u" data-n="div"><b>diverge</b><small>stop and report</small></div>
+      </div></div>
+      <div class="lane flowlane"><div class="who u">sysrr_search.sh</div><div class="boxes">
+        <div class="node u" data-n="search"><b>the search loop</b><small>restore, replay -F, keep</small></div>
+      </div></div>
+    </div>
+    <div class="demo-head">
+      <button type="button" data-act="prev" id="code-prev">Back</button>
+      <button type="button" class="primary" data-act="next" id="code-next">Next</button>
+      <div class="dots"></div>
+      <span class="count"></span>
+    </div>
+    <div class="caption" aria-live="polite"></div>
+  </div>
+
+  <h3>The records both sides agree on</h3>
+  <p>The recorder and the replayer share nothing but the log, and the log is a row of C structs from <code>sysrr.h</code>. Every record starts with the same <code>rec_hdr</code>: a type, a length, and <code>seq</code>. The <code>seq</code> is what ties a call's data to the call.</p>
+  <div class="tablewrap"><table>
+    <thead><tr><th>Struct</th><th>Written by</th><th>Read by</th><th>What it holds</th></tr></thead>
+    <tbody id="structs"></tbody>
+  </table></div>
 </section>
 
 <section id="use">
@@ -402,37 +481,166 @@ sudo ./sysrr_replay -p $(sudo podman inspect -f '{{.State.Pid}}' NEW) -g 1 -T re
 (function () {
   var C = function (s) { return '<code>' + s + '</code>'; };
 
+  /* ---- links into the source, pinned to the commit this page describes ---- */
+  var GH = 'https://github.com/wlog106/sysrr/blob/176ed3e/syscall-rr/';
+  var B = 'sysrr.bpf.c', S = 'sysrr.c', H = 'sysrr.h', P = 'sysrr_replay.c', X = 'sysrr_search.sh', D = 'sysrr_dump.c', TR = 'tests/test_replay.sh';
+  function esc(s) { return s.replace(/&/g, '&amp;').replace(/</g, '&lt;'); }
+  function link(r) {
+    return '<a href="' + GH + r[0] + '#L' + r[1] + '" target="_blank" rel="noopener">' + esc(r[2]) +
+      ' <span class="file">' + r[0] + ':' + r[1] + '</span></a>';
+  }
+  /* each ref: [file, line, name, what it does] */
+  function refs(list, label) {
+    if (!list || !list.length) return '';
+    return '<div class="lbl">' + (label || 'In the code') + '</div>' + list.map(function (r) {
+      return '<div class="ref">' + link(r) + '<span>' + r[3] + '</span></div>';
+    }).join('');
+  }
+
   /* ---- steppers: a list of steps, each lights up some boxes ---- */
   var STEPS = {
     journey: [
-      { on: ['prog'], h: 'A program runs in a container', p: 'It is whatever you want to study: a server, a script, a test.' },
-      { on: ['prog', 'sysrr', 'log'], h: 'Start the recorder', p: 'sysrr attaches to the program from outside. From now on every syscall the program makes, with the data that came back, is added to rec.log.', c: 'sudo ./sysrr -p PID -o rec.log' },
-      { on: ['prog', 'criu', 'ckpt', 'sysrr'], h: 'Take the photo', p: 'CRIU freezes the program for about 0.2 seconds, saves its memory and threads, and lets it go on. sysrr notices CRIU and notes in the log: generation 1 starts here.', c: 'sudo podman container checkpoint --leave-running -e ckpt.tar.gz CTR' },
-      { on: ['prog', 'sysrr', 'log'], h: 'Keep recording until it goes wrong', p: 'Minutes or hours later the program fails. Stop the recorder. The log now holds everything the program was told between the photo and the failure.' },
-      { on: ['ckpt', 'copy'], h: 'Restore a copy, frozen', p: 'On machine B, CRIU rebuilds the program from the photo: the same memory, the same threads, even the same process numbers. It is left stopped, so it cannot make a single syscall yet.', c: 'sudo podman container restore --import ckpt.tar.gz --name NEW' },
-      { on: ['log', 'copy', 'replay'], h: 'Replay', p: 'sysrr_replay takes over the copy\'s syscalls and lets it run. Each call is answered from the log. The copy computes what the original computed, and fails where the original failed. You can do this as many times as you like.', c: 'sudo ./sysrr_replay -p PID2 -g 1 -T rec.log' }
+      { on: ['prog'], h: 'A program runs in a container', p: 'It is whatever you want to study: a server, a script, a test.',
+        k: [['tests/run_all.sh', 1, 'tests/run_all.sh', 'The suite\'s programs (targets) live in ' + C('tests/') + '. This script runs each one through all six steps.']] },
+      { on: ['prog', 'sysrr', 'log'], h: 'Start the recorder', p: 'sysrr attaches to the program from outside. From now on every syscall the program makes, with the data that came back, is added to rec.log.', c: 'sudo ./sysrr -p PID -o rec.log',
+        k: [[S, 189, 'main → sysrr_bpf__open', 'Loads the eBPF half of the recorder into the kernel.'],
+            [S, 212, 'targets map', 'Puts the program\'s PID in the ' + C('targets') + ' map. The hooks ignore every process not in it.'],
+            [S, 251, 'sysrr_bpf__attach', 'Turns the hooks on. Recording starts here.']] },
+      { on: ['prog', 'criu', 'ckpt', 'sysrr'], h: 'Take the photo', p: 'CRIU freezes the program for about 0.2 seconds, saves its memory and threads, and lets it go on. sysrr notices CRIU and notes in the log: generation 1 starts here.', c: 'sudo podman container checkpoint --leave-running -e ckpt.tar.gz CTR',
+        k: [[B, 567, 'handle_ptrace', 'Sees CRIU\'s ' + C('ptrace') + ' calls aimed at the program. When CRIU lets go of the last thread, it adds 1 to ' + C('gen') + '.'],
+            [B, 547, 'emit_marker', 'Writes a marker record (seized, detached, new generation) into the log.']] },
+      { on: ['prog', 'sysrr', 'log'], h: 'Keep recording until it goes wrong', p: 'Minutes or hours later the program fails. Stop the recorder. The log now holds everything the program was told between the photo and the failure.',
+        k: [[S, 265, 'ring_buffer__poll loop', 'Every 10 ms, moves new records from the kernel to the file. Ctrl-C ends the loop.'],
+            [D, 234, 'sysrr_dump main', 'With ' + C('-s') + ', counts the records of each generation and checks that none were lost.']] },
+      { on: ['ckpt', 'copy'], h: 'Restore a copy, frozen', p: 'On machine B, CRIU rebuilds the program from the photo: the same memory, the same threads, even the same process numbers. It is left stopped, so it cannot make a single syscall yet.', c: 'sudo podman container restore --import ckpt.tar.gz --name NEW',
+        k: [[P, 1008, 'snapshot_maps', 'sysrr\'s own code starts after the restore: the replayer first notes the copy\'s memory map, to name addresses in its reports.']] },
+      { on: ['log', 'copy', 'replay'], h: 'Replay', p: 'sysrr_replay takes over the copy\'s syscalls and lets it run. Each call is answered from the log. The copy computes what the original computed, and fails where the original failed. You can do this as many times as you like.', c: 'sudo ./sysrr_replay -p PID2 -g 1 -T rec.log',
+        k: [[P, 3187, 'main → load', 'Reads generation 1 of the log.'],
+            [P, 3262, 'main → attach_listener', 'Takes over the frozen copy\'s syscalls.'],
+            [P, 3305, 'main → supervise', 'Answers them one at a time until the log runs out.']] }
     ],
     record: [
       { on: ['call'], h: 'The program asks for 16 bytes', p: 'It puts the request in CPU registers and enters the kernel. It has no idea anyone is watching.' },
-      { on: ['enter'], h: 'The entry hook runs', p: 'An eBPF function notes which call this is and its arguments, and takes the next number from a global counter, ' + C('seq') + '. Those numbers later give the exact order of calls across all threads.' },
-      { on: ['do'], h: 'The kernel does the real work', p: 'It reads the file and puts 16 bytes into the program\'s buffer. Recording changes nothing here.' },
-      { on: ['exit'], h: 'The exit hook runs', p: 'A second eBPF function sees the result, 16, and copies those 16 bytes out of the program\'s memory. These bytes are what a replay will need.' },
-      { on: ['ring'], h: 'The records go into a ring buffer', p: 'A data record with the bytes, then a syscall record that says the call is complete. The ring buffer is memory shared between the kernel and sysrr, so the program doesn\'t wait for a disk.' },
-      { on: ['copy', 'back'], h: 'sysrr writes them to rec.log', p: 'The user-space half of the recorder only moves bytes from the ring buffer to the file. Meanwhile the program already has its answer and carries on.' }
+      { on: ['enter'], h: 'The entry hook runs', p: 'An eBPF function notes which call this is and its arguments, and takes the next number from a global counter, ' + C('seq') + '. Those numbers later give the exact order of calls across all threads.',
+        k: [[B, 642, 'sys_enter', 'The entry hook, on the ' + C('sys_enter') + ' tracepoint. Runs for every syscall on the machine and returns at once for other processes.'],
+            [B, 659, 'seq_ctr', C('st->seq = __sync_fetch_and_add(&seq_ctr, 1)') + ': one counter for all threads.'],
+            [B, 59, 'struct task_state', 'Where the arguments wait until the exit hook. One per thread, kept in the ' + C('tstate') + ' map.']] },
+      { on: ['do'], h: 'The kernel does the real work', p: 'It reads the file and puts 16 bytes into the program\'s buffer. Recording changes nothing here.',
+        k: [[B, 357, 'capture_enter', 'Before this, the entry hook asked which bytes to copy now. For ' + C('read') + ' there are none. For ' + C('write') + ' it would copy the text (line 376).']] },
+      { on: ['exit'], h: 'The exit hook runs', p: 'A second eBPF function sees the result, 16, and copies those 16 bytes out of the program\'s memory. These bytes are what a replay will need.',
+        k: [[B, 697, 'sys_exit', 'The exit hook. Picks up the thread\'s ' + C('task_state') + ' from the entry.'],
+            [B, 417, 'capture_exit: case __NR_read', C('OUT(1, a[1], RLEN)') + ': copy as many bytes as the call returned, from the buffer in argument 1.'],
+            [B, 197, 'emit_buf', 'Copies the bytes in pieces of up to 16 KiB, one data record each.']] },
+      { on: ['ring'], h: 'The records go into a ring buffer', p: 'A data record with the bytes, then a syscall record that says the call is complete. The ring buffer is memory shared between the kernel and sysrr, so the program doesn\'t wait for a disk.',
+        k: [[B, 47, 'events', 'The ring buffer map, 64 MiB.'],
+            [B, 613, 'emit_syscall', 'The ' + C('rec_syscall') + ' record, sent last: number, arguments, result, ' + C('seq') + ', generation.'],
+            [B, 103, 'wake_flags', 'Wakes sysrr only when the ring is filling up. Waking it for every record was most of the cost.']] },
+      { on: ['copy', 'back'], h: 'sysrr writes them to rec.log', p: 'The user-space half of the recorder only moves bytes from the ring buffer to the file. Meanwhile the program already has its answer and carries on.',
+        k: [[S, 28, 'handle_rec', 'Called once per record. Counts it and ' + C('fwrite') + 's it to rec.log unchanged.']] }
     ],
     replay: [
       { on: ['call'], h: 'The copy makes its next call', p: { ok: 'The same call the original made at this point: ' + C('read(3, buf, 16)') + '.', bad: 'The original printed ' + C('"total 41"') + ' here. This copy got a wrong value earlier, so it wants to print ' + C('"total 40"') + '.' } },
-      { on: ['park'], h: 'The kernel parks the thread', p: 'The seccomp filter matches every syscall. The call does not run. The thread sleeps inside the kernel.' },
-      { on: ['ask'], h: 'The kernel asks sysrr_replay', p: 'It sends a notification: which thread, which call, which arguments.' },
-      { on: ['look'], h: 'sysrr_replay takes that thread\'s next record', p: { ok: 'The log says this thread\'s next call was ' + C('read(3, buf, 16) = 16') + ', and has the 16 bytes.', bad: 'The log says this thread\'s next call was ' + C('write(1, "total 41\\n", 9) = 9') + '.' } },
-      { on: ['check'], h: 'It compares the call with the record', p: { ok: 'Same call, same arguments. A ' + C('read') + ' hands nothing to the kernel, so there is no data to compare.', bad: 'Same call, but it reads the text out of the copy\'s memory and finds ' + C('"total 40"') + ' where the log has ' + C('"total 41"') + '. One byte differs.' } },
-      { on: ['poke'], h: { ok: 'It writes the recorded bytes into the copy\'s memory', bad: 'It stops: divergence' }, p: { ok: 'Straight into ' + C('buf') + ', where the kernel would have put them.', bad: 'The copy is no longer living the original\'s life. sysrr_replay prints both versions and the thread\'s last calls, and freezes the copy so you can look at it.' }, bad: true },
-      { on: ['ret', 'back'], h: { ok: 'The kernel returns 16 to the copy', bad: 'What you do next' }, p: { ok: 'The thread wakes up. For the copy, a read just returned 16 bytes. It cannot tell this from the real thing.', bad: 'Look a few calls back in the report: a value the copy was given, or an order of threads, differed before this point. This is how the tampered-log test catches one flipped byte, three lines later.' }, bad: true }
+      { on: ['park'], h: 'The kernel parks the thread', p: 'The seccomp filter matches every syscall. The call does not run. The thread sleeps inside the kernel.',
+        k: [[P, 177, 'attach_listener: the filter', 'Seven instructions: every 64-bit syscall gets ' + C('SECCOMP_RET_USER_NOTIF') + ', which parks it.']] },
+      { on: ['ask'], h: 'The kernel asks sysrr_replay', p: 'It sends a notification: which thread, which call, which arguments.',
+        k: [[P, 3091, 'supervise: NOTIF_RECV', 'Waits on the listener and reads the notification into a ' + C('struct seccomp_notif') + '.'],
+            [P, 2550, 'handle', 'Decides what happens to this one call. The rest of this demo is inside it.']] },
+      { on: ['look'], h: 'sysrr_replay takes that thread\'s next record', p: { ok: 'The log says this thread\'s next call was ' + C('read(3, buf, 16) = 16') + ', and has the 16 bytes.', bad: 'The log says this thread\'s next call was ' + C('write(1, "total 41\\n", 9) = 9') + '.' },
+        k: [[P, 916, 'thread_for', 'Finds the thread\'s queue by its id inside the container, which is the same as in the recording.'],
+            [P, 1968, 'next_ent', 'The first record in that queue not used yet.'],
+            [P, 290, 'struct thr', 'One recorded thread: its queue of records and where it is in it.']] },
+      { on: ['check'], h: 'It compares the call with the record', p: { ok: 'Same call, same arguments. A ' + C('read') + ' hands nothing to the kernel, so there is no data to compare.', bad: 'Same call, but it reads the text out of the copy\'s memory and finds ' + C('"total 40"') + ' where the log has ' + C('"total 41"') + '. One byte differs.' },
+        k: { ok: [[P, 2724, 'handle: same syscall?', 'A different call number is a divergence.'],
+                  [P, 2777, 'handle: same fd?', 'A different file number is one too.'],
+                  [P, 1293, 'check_inputs', 'Compares the bytes the call hands over. For a read there are none.']],
+             bad: [[P, 1293, 'check_inputs', 'Reads the text from the copy with ' + C('process_vm_readv') + ' and compares it with the recorded bytes. Here they differ.']] } },
+      { on: ['poke'], h: { ok: 'It writes the recorded bytes into the copy\'s memory', bad: 'It stops: divergence' }, p: { ok: 'Straight into ' + C('buf') + ', where the kernel would have put them.', bad: 'The copy is no longer living the original\'s life. sysrr_replay prints both versions and the thread\'s last calls, and freezes the copy so you can look at it.' }, bad: true,
+        k: { ok: [[P, 644, 'runs_real', 'Answers "run or fake?". For a read: fake.'],
+                  [P, 1366, 'inject_outputs', 'Writes each recorded output piece to the place the arguments point to.'],
+                  [P, 721, 'mem_write', C('process_vm_writev') + ' into the copy\'s memory.']],
+             bad: [[P, 1272, 'diverge', 'Prints the "DIVERGENCE" line with both calls.'],
+                   [P, 789, 'history', 'Prints the thread\'s last calls.'],
+                   [P, 1213, 'finish', 'Does what ' + C('-e') + ' says. With ' + C('stop') + ', the call stays unanswered, so the thread stays frozen at it.']] } },
+      { on: ['ret', 'back'], h: { ok: 'The kernel returns 16 to the copy', bad: 'What you do next' }, p: { ok: 'The thread wakes up. For the copy, a read just returned 16 bytes. It cannot tell this from the real thing.', bad: 'Look a few calls back in the report: a value the copy was given, or an order of threads, differed before this point. This is how the tampered-log test catches one flipped byte, three lines later.' }, bad: true,
+        k: { ok: [[P, 984, 'respond', C('SECCOMP_IOCTL_NOTIF_SEND') + ' with the recorded result, 16. The thread wakes.'],
+                  [P, 2295, 'consume', 'Marks the record used.']],
+             bad: [[TR, 255, 'tests/test_replay.sh', 'The tampered-log test: changes one recorded byte and checks the replay stops at the next write.']] } }
+    ],
+    code: [
+      { on: ['rmain'], h: '1. The recorder starts', p: 'sysrr loads its eBPF programs, writes the program\'s PID into a map so the hooks know whom to watch, and turns the hooks on.',
+        k: [[S, 189, 'sysrr_bpf__open', 'Opens the compiled ' + C('sysrr.bpf.o') + ' (built into ' + C('sysrr.skel.h') + ').'],
+            [S, 212, 'targets', 'PID → map. With ' + C('-f') + ', children are added too.'],
+            [S, 251, 'sysrr_bpf__attach', 'The hooks are live.']] },
+      { on: ['enter'], h: '2. The program calls read; the entry hook runs', p: 'The hook gives the call its ' + C('seq') + ' number and keeps the six arguments for later in the thread\'s ' + C('task_state') + '.',
+        k: [[B, 642, 'sys_enter', 'Entry hook.'], [B, 73, 'tstate', 'Per-thread storage, so entry and exit find each other.'], [B, 43, 'seq_ctr', 'The global order of entries.']] },
+      { on: ['cap'], h: '3. Which bytes to copy', p: 'Two big switch statements know, for each of about 300 syscalls, which arguments point to memory and how long it is. Input is copied at entry, output at exit.',
+        k: [[B, 357, 'capture_enter', 'Inputs: ' + C('IN()') + ' and ' + C('STR()') + ', marked ' + C('D_IN') + ' / ' + C('D_STR') + '.'],
+            [B, 411, 'capture_exit', 'Outputs: ' + C('OUT()') + ', marked ' + C('D_OUT') + '. For our read: line 417.']] },
+      { on: ['emit'], h: '4. Records are made', p: 'The bytes go out as ' + C('rec_data') + ' records, then one ' + C('rec_syscall') + ' closes the call. All of them carry the same ' + C('seq') + '.',
+        k: [[B, 197, 'emit_buf', 'One ' + C('rec_data') + ' per 16 KiB piece, built in a per-CPU ' + C('scratch') + ' map.'],
+            [B, 613, 'emit_syscall', 'The ' + C('rec_syscall') + ', with the container\'s thread id, which survives a restore.'],
+            [H, 74, 'struct rec_syscall', 'The record layout, shared with the replayer.']] },
+      { on: ['ptr'], h: '5. Meanwhile, CRIU takes the photo', p: 'Every ' + C('ptrace') + ' call on the machine passes through the entry hook. The ones CRIU aims at the program mark the generation border.',
+        k: [[B, 649, 'sys_enter → handle_ptrace', 'Checked before the PID filter, because CRIU is another process.'],
+            [B, 567, 'handle_ptrace', 'Counts seized threads. At the last detach, ' + C('gen++') + '.'],
+            [B, 662, 'F_DUMP', 'Calls made while CRIU holds a thread are flagged, so a replay skips them.']] },
+      { on: ['ring', 'hrec', 'log'], h: '6. Records reach the disk', p: 'The ring buffer carries the records to user space, and sysrr appends them to rec.log behind a file header.',
+        k: [[B, 47, 'events', 'Ring buffer map.'], [S, 28, 'handle_rec', 'One ' + C('fwrite') + ' per record.'], [H, 135, 'struct sysrr_file_hdr', 'The first bytes of rec.log: magic, PID, kernel version.']] },
+      { on: ['log', 'load'], h: '7. The replayer reads the log', p: 'It maps the file, keeps the calls of the chosen generation, ties each call\'s data records to it by ' + C('seq') + ', and gives each thread a queue.',
+        k: [[P, 430, 'load', 'Two passes over the file.'],
+            [P, 472, 'load: the filter', 'Skips other generations and ' + C('F_DUMP') + ' calls.'],
+            [P, 275, 'struct ent', 'One recorded call with its data pieces.'],
+            [P, 390, 'plan_signals', 'Pins each recorded signal to the call it interrupted.']] },
+      { on: ['order'], h: '8. With -T: decide the turn order', p: 'Every record gets a key: when its call returned in the recording. Threads will be let go in that order, one at a time.',
+        k: [[P, 2092, 'order_serial', 'Sets ' + C('key') + ' on every record and sorts them into ' + C('byexit') + '.'],
+            [P, 2049, 'find_deps', 'Facts that beat the guess: an epoll event comes after the ' + C('epoll_ctl') + ' that armed it.']] },
+      { on: ['attach'], h: '9. Take over the copy', p: 'For a few milliseconds, the replayer uses ptrace to make the frozen copy call ' + C('seccomp()') + ' on itself, then copies the listener file out of it.',
+        k: [[P, 173, 'attach_listener', 'Writes ' + C('syscall; int3') + ' at the copy\'s instruction pointer to run calls in it.'],
+            [P, 248, 'injected seccomp()', 'With ' + C('NEW_LISTENER') + ' and ' + C('TSYNC') + ', so it covers every thread.'],
+            [P, 256, 'pidfd_getfd', 'The listener now belongs to sysrr_replay too.']] },
+      { on: ['sup'], h: '10. A parked call arrives', p: 'The copy\'s thread calls read and is parked. The replayer reads the notification, finds the thread\'s next record and checks it.',
+        k: [[P, 2963, 'supervise', 'The main loop: ' + C('poll') + ' on every listener.'],
+            [P, 2550, 'handle', 'One notification.'],
+            [P, 1293, 'check_inputs', 'Input bytes must match.']] },
+      { on: ['ans'], h: '11. The answer', p: 'A read is faked: the recorded bytes go into the copy\'s buffer and the recorded result goes back. A call like ' + C('mmap') + ' would run for real instead.',
+        k: [[P, 644, 'runs_real', 'Fake or run.'], [P, 542, 'passthrough', 'The list of calls that always run.'],
+            [P, 1366, 'inject_outputs', 'Writes the ' + C('D_OUT') + ' pieces.'], [P, 1701, 'install_fds', 'For faked calls that make files, puts a real file at the recorded number.'],
+            [P, 984, 'respond', 'Sends the answer; the thread wakes.']] },
+      { on: ['div'], h: '12. If the copy drifts', p: 'Any mismatch stops the replay. With ' + C('-T') + ', the report also names the guesses made just before it.',
+        k: [[P, 1272, 'diverge', 'The DIVERGENCE report.'], [P, 1169, 'search_report', 'Prints ' + C('SEARCH progress') + ', ' + C('SEARCH at') + ' and ' + C('SEARCH candidates') + ' for the script.']] },
+      { on: ['search', 'order'], h: '13. Search for an order that fits', p: 'The script restores the photo again and replays with ' + C('-F') + ' and a list of guesses to flip. ' + C('order_serial') + ' gives those records the other key.',
+        k: [[X, 70, 'sysrr_search.sh: one try', 'Runs ' + C('sysrr_replay -T -F …') + ' and reads the SEARCH lines.'],
+            [P, 3160, 'option -F', 'The list of flips.'], [P, 2137, 'order_serial: flipped()', 'Takes the stretch at its start instead of its end.']] }
     ]
   };
+
+  var EXTRA = {
+    order: [[P, 2092, 'order_serial', 'Gives each record its place in the turn order: when it returned in the recording.'],
+            [P, 2235, 'next_exit_is', 'Is this record the next in that order? If not, its thread stays parked.'],
+            [P, 2255, 'running_thread', 'Is another thread running program code? Then everyone else waits.'],
+            [P, 2210, 'lock_free_yet', 'A thread that waited for a lock live: if the lock is already free here, it goes later.'],
+            [P, 2935, 'lock_holder_first', 'When the next thread waits on a lock, the one that holds it goes first.']],
+    search: [[P, 1169, 'search_report', 'At a divergence, prints how far the replay got and the guesses nearby.'],
+             [X, 1, 'sysrr_search.sh', 'Restores, replays with ' + C('-F') + ', keeps a flip if the replay got further, repeats.'],
+             [P, 2029, 'flipped', 'Is this record in the ' + C('-F') + ' list?']]
+  };
+  document.querySelectorAll('[data-refs]').forEach(function (el) { el.innerHTML = refs(EXTRA[el.getAttribute('data-refs')]); });
+
+  var STRUCTS = [
+    ['rec_hdr', 66, 'every writer', 'every reader', 'Type, length, ' + C('seq') + '. Lets a reader skip a record it doesn\'t know.'],
+    ['rec_syscall', 74, [B, 613, 'emit_syscall'], [P, 430, 'load'], 'One call: number, six arguments, result, thread ids, generation, how many data records belong to it.'],
+    ['rec_data', 87, [B, 197, 'emit_buf'], [P, 1293, 'check_inputs'], 'Bytes of one argument. ' + C('D_OUT') + ' is written into the copy (' + C('inject_outputs') + '); ' + C('D_IN') + ' and ' + C('D_STR') + ' are compared.'],
+    ['rec_marker', 98, [B, 547, 'emit_marker'], [D, 234, 'sysrr_dump'], 'CRIU seized or released a thread, or a new generation began.'],
+    ['rec_signal', 111, [B, 760, 'emit_signal'], [P, 390, 'plan_signals'], 'A signal reached a thread, or the thread ended. Its ' + C('seq') + ' says after which call.'],
+    ['sysrr_file_hdr', 135, [S, 243, 'main'], [P, 430, 'load'], 'The start of rec.log: magic number, format version, PID, kernel.']
+  ];
+  document.getElementById('structs').innerHTML = STRUCTS.map(function (s) {
+    var who = function (w) { return typeof w === 'string' ? w : '<a href="' + GH + w[0] + '#L' + w[1] + '" target="_blank" rel="noopener"><code>' + w[2] + '</code></a>'; };
+    return '<tr><td><a href="' + GH + H + '#L' + s[1] + '" target="_blank" rel="noopener"><code>' + s[0] + '</code></a></td><td>' + who(s[2]) + '</td><td>' + who(s[3]) + '</td><td>' + s[4] + '</td></tr>';
+  }).join('');
   var BAD_TEXT = { call: 'write(1, "total 40\\n", 9)', look: 'log says: write "total 41"', check: 'text differs', poke: 'nothing written', ret: 'no answer', back: 'frozen for inspection' };
 
-  function pick(v, mode) { return typeof v === 'string' ? v : v[mode]; }
+  function pick(v, mode) { return (typeof v === 'string' || Array.isArray(v) || v == null) ? v : v[mode]; }
 
   document.querySelectorAll('[data-stepper]').forEach(function (root) {
     var name = root.getAttribute('data-stepper'), steps = STEPS[name], i = 0, mode = 'ok';
@@ -456,9 +664,22 @@ sudo ./sysrr_replay -p $(sudo podman inspect -f '{{.State.Pid}}' NEW) -g 1 -T re
       });
       dots.querySelectorAll('i').forEach(function (d, k) { d.classList.toggle('on', k <= i); });
       count.textContent = (i + 1) + ' / ' + steps.length;
-      cap.innerHTML = '<h3>' + pick(s.h, mode) + '</h3><p>' + pick(s.p, mode) + '</p>' + (s.c ? '<pre>' + s.c + '</pre>' : '');
+      var k = pick(s.k, mode);
+      cap.innerHTML = '<h3>' + pick(s.h, mode) + '</h3><p>' + pick(s.p, mode) + '</p>' + (s.c ? '<pre>' + s.c + '</pre>' : '') +
+        (k && k.length ? '<div class="incode">' + refs(k) + '</div>' : '');
       prev.disabled = i === 0;
       next.textContent = i === steps.length - 1 ? 'Start over' : 'Next';
+    }
+    /* the code map: a click on a box jumps to the first step that lights it */
+    if (root.hasAttribute('data-jump')) {
+      root.querySelectorAll('.node').forEach(function (el) {
+        var n = el.getAttribute('data-n'), go = function () {
+          for (var j = 0; j < steps.length; j++) if (steps[j].on.indexOf(n) >= 0) { i = j; draw(); return; }
+        };
+        el.setAttribute('role', 'button'); el.tabIndex = 0;
+        el.addEventListener('click', go);
+        el.addEventListener('keydown', function (ev) { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); go(); } });
+      });
     }
     prev.addEventListener('click', function () { if (i > 0) { i--; draw(); } });
     next.addEventListener('click', function () { i = i === steps.length - 1 ? 0 : i + 1; draw(); });
@@ -479,10 +700,21 @@ sudo ./sysrr_replay -p $(sudo podman inspect -f '{{.State.Pid}}' NEW) -g 1 -T re
     ['Generation 1: after the photo', 'What a copy restored from this photo has not lived yet. ' + C('sysrr_replay -g 1') + ' feeds it exactly these calls, thread by thread.'],
     ['After you stop the recorder', 'Nothing more is in the log. When a replay has used every record, it has brought the copy to the state the original had at this moment. With ' + C('-e live') + ' the copy then goes on for real.']
   ];
+  var GENREFS = [
+    [[B, 661, 'sys_enter: st->gen', 'Every call is stamped with the generation it was made in.'],
+     [P, 472, 'load: the filter', 'A replay keeps only the generation asked for with ' + C('-g') + '.']],
+    [[B, 567, 'handle_ptrace', 'Watches ' + C('PTRACE_SEIZE') + ' and ' + C('PTRACE_DETACH') + ' aimed at the program; the last detach does ' + C('gen++') + '.'],
+     [B, 662, 'F_DUMP', 'Calls made while CRIU holds the thread get this flag.'],
+     [H, 62, 'M_GEN', 'The marker record for "a new generation starts".']],
+    [[P, 430, 'load', 'Builds one queue per thread from these calls.'],
+     [P, 3187, 'main → load(…, &gen)', 'Without ' + C('-g') + ', the last generation in the log.']],
+    [[P, 2323, 'end_reached', 'Every record used: the copy is where the original was when you stopped.'],
+     [P, 1213, 'finish', 'Then ' + C('-e stop') + ', ' + C('live') + ' or ' + C('kill') + '.']]
+  ];
   var gcap = document.getElementById('gens-cap');
   function showGen(g) {
     document.querySelectorAll('#gens-demo .seg').forEach(function (b) { b.setAttribute('aria-pressed', String(b.getAttribute('data-g') === String(g))); });
-    gcap.innerHTML = '<h3>' + GENS[g][0] + '</h3><p>' + GENS[g][1] + '</p>';
+    gcap.innerHTML = '<h3>' + GENS[g][0] + '</h3><p>' + GENS[g][1] + '</p><div class="incode">' + refs(GENREFS[g]) + '</div>';
   }
   document.querySelectorAll('#gens-demo .seg').forEach(function (b) { b.addEventListener('click', function () { showGen(+b.getAttribute('data-g')); }); });
   showGen(0);
@@ -503,11 +735,31 @@ sudo ./sysrr_replay -p $(sudo podman inspect -f '{{.State.Pid}}' NEW) -g 1 -T re
     ['nanosleep', 'fake', 'A replay doesn\'t wait. It returns at once, which is one reason a replay is usually faster than the original run.'],
     ['exit', 'run', 'The copy ends the way the original did, with the same exit code or the same crash.']
   ];
+  var CALLREFS = {
+    'read': [[B, 417, 'capture_exit: read', 'Records the bytes as ' + C('D_OUT') + '.'], [P, 1366, 'inject_outputs', 'Writes them into the copy.']],
+    'write': [[B, 376, 'capture_enter: write', 'Records the text as ' + C('D_IN') + '.'], [P, 1293, 'check_inputs', 'Compares it with the copy\'s text.'],
+              [P, 1415, 'capture_write', 'Saves it for ' + C('-w') + '.'], [P, 1895, 'sends_sigpipe', 'The SIGPIPE case.']],
+    'clock_gettime': [[B, 435, 'capture_exit: clock_gettime', 'Records the time it returned.'], [P, 1366, 'inject_outputs', 'Gives the copy that time.']],
+    'open': [[B, 368, 'capture_enter: openat', 'Records the path as ' + C('D_STR') + '.'], [P, 1553, 'open_like', 'Opens the same file from the container\'s root, or a stand-in.'],
+             [P, 1701, 'install_fds', 'Puts it at the recorded number with ' + C('SECCOMP_IOCTL_NOTIF_ADDFD') + '.']],
+    'accept': [[B, 398, 'capture_enter: accept', 'Records the address the client came from (at exit, line 465).'], [P, 1622, 'make_fd', 'Makes a socket of the same kind that leads nowhere.']],
+    'mmap': [[P, 542, 'passthrough', 'mmap is on the run-for-real list.'], [P, 1847, 'pin_address', 'Issues it again with the recorded address.']],
+    'clone': [[B, 826, 'on_fork', 'The recorder adds the new process to ' + C('targets') + '.'], [P, 958, 'set_next_pid', 'Writes ' + C('ns_last_pid') + ' so the child gets the recorded id.'],
+              [P, 944, 'expect_child', 'Waits for the child and gives it its queue.']],
+    'futex': [[P, 655, 'runs_real: futex', 'With ' + C('-T') + ', a recorded wait is not run.'], [P, 2453, 'hold_wait', 'A wait the recording lacks is held instead.']],
+    'a timer signal': [[B, 792, 'on_signal', 'Records the signal and the thread it hit.'], [P, 390, 'plan_signals', 'Ties it to the call it interrupted.'],
+                       [P, 226, 'attach_listener: setitimer', 'Switches the copy\'s own timers off.'], [P, 1914, 'return_with_signals', 'Delivers it as the call returns.']],
+    'kill': [[P, 542, 'passthrough', 'kill and tgkill run.'], [P, 630, 'takes_pending_signal', 'The call that later takes the signal runs too.']],
+    'close': [[P, 562, 'passthrough: close', 'Runs, unless ' + C('-N') + ' turned fd installation off.']],
+    'nanosleep': [[P, 1300, 'check_inputs', 'Sleep lengths are not compared.'], [P, 1366, 'inject_outputs', 'Returns the recorded result at once.']],
+    'exit': [[B, 687, 'sys_enter: exit', 'No exit hook follows, so the record is sent at entry.'], [P, 1081, 'report_live_end', 'Compares how the copy ended with how the original did.']]
+  };
   var chips = document.getElementById('pick-chips'), out = document.getElementById('pick-out');
   function showCall(k) {
     chips.querySelectorAll('.chip').forEach(function (c, j) { c.setAttribute('aria-pressed', String(j === k)); });
     var c = CALLS[k];
-    out.innerHTML = '<span class="pill ' + c[1] + '">' + (c[1] === 'fake' ? 'faked' : 'runs for real') + '</span><p>' + c[2] + '</p>';
+    out.innerHTML = '<span class="pill ' + c[1] + '">' + (c[1] === 'fake' ? 'faked' : 'runs for real') + '</span><p>' + c[2] + '</p>' +
+      '<span></span><div class="incode" style="margin-top: 4px">' + refs(CALLREFS[c[0]]) + '</div>';
   }
   CALLS.forEach(function (c, k) {
     var b = document.createElement('button');
