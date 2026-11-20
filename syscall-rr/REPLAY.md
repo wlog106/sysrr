@@ -619,6 +619,59 @@ numbers of commit 77c5a0d (its links point at that commit, so they still land).
 Suite after the fixes: 30 of 30 (with the recorder fix), signal tests 2 of 2 each
 after the replay fixes.
 
+## Whole-tool review (2026-11-20, late): fixed and open
+
+Four read-only reviewers (replay first half, second half, recorder, scripts) ran
+in parallel at the user's request.
+
+Fixed the same evening (scripts):
+* sysrr_restore.sh: original config kept at /run/sysrr-restore.criu.conf (or the
+  marker /run/sysrr-restore.no-conf), so a killed run is repaired by the next;
+  flock on /run/sysrr-restore.lock; other tools' `action-script` lines left out
+  for the restore (crr's hook could freeze the restored cgroup or attach).
+* sysrr_search.sh: -i and log paths resolved before its cd (relative paths used
+  to fail every restore and look like "no order found"); restores through
+  sysrr_restore.sh (it used to overwrite and then delete the CRIU config, and an
+  orphaned search could wipe crr's config on claude-test); the copy is found by
+  the name sysrr_restore.sh prints, not `podman ps --latest`; work dir removed.
+* tests/test_crash.sh: restores through sysrr_restore.sh; no longer deletes
+  /etc/criu/default.conf without a backup (run_crashes.sh with REMOTE= would have
+  deleted crr's config).
+* tests/test_replay.sh: stops only its own recorder (`kill -INT $SYSRR_PID`, not
+  `pkill -x sysrr`); a failed restore prints FAIL; a failed output comparison
+  prints the first differing lines. Reason: in 3 rounds of the thread tests one
+  `threads` round reached the end with no divergence (every write checked) and
+  still failed `cmp`; the files were gone, likely two near-simultaneous writes
+  whose pipe order differs from their record order.
+
+Open (pre-existing, found by the review, not fixed yet; in order of weight):
+1. recvmsg/recvmmsg: the recorded msghdr (and mmsghdr array) is written back
+   whole, including the live process's msg_name/msg_iov/msg_control pointers;
+   when the heap differs (counted as n_ptrdiff), the next call of a reused msghdr
+   uses live addresses: silent corruption or EFAULT. Fix: copy only the non-pointer
+   fields (namelen, iovlen, controllen, flags, msg_len).
+2. Several standard signals of the same number planned at one syscall are sent
+   back to back while the thread is stopped; the kernel keeps one, so the handler
+   runs once instead of twice. sig[4]/startsig[4] silently drop a fifth. Fix: one
+   per number per batch, the rest at the next notification; dynamic arrays.
+3. A received signal is matched to the latest kill of that number without
+   checking the kill's target: kill(0|-pgid) gets matched once and the other
+   receivers get it twice; a kill to an unrecorded process can swallow a later
+   outside signal. Fix: compare args[0] with the receiver's ns_tgid (tkill/tgkill:
+   the thread), no kill_used for pid <= 0.
+4. sig_done/nstart/kill flags are set before the delivery succeeds; when the
+   answer fails with ENOENT (a real SIGCHLD interrupted the wait) the planned
+   signals are lost. Fix: set them after success.
+5. open_like resolves relative paths with RESOLVE_IN_ROOT based at cwd or the
+   dirfd, so ".." cannot climb and absolute symlinks resolve below it. Fix: base
+   at the container root with the cwd/dirfd path prepended.
+6. load() does not check REC_SYSCALL/REC_DATA lengths against their structs (as
+   sysrr_dump now does). 7. check_inputs prints an uninitialised addr when
+   resolve() fails. 8. install_scm_fds ignores MSG_CMSG_CLOEXEC.
+9. A signal pending at the checkpoint whose handler has SA_NODEFER is not in
+   SigBlk inside the handler: delivered twice. Idea: skip it when the restored
+   thread stands at the handler's first instruction (g->handler).
+
 ## Replay limitations (tell the user when relevant)
 
 * CONTINUE'd syscalls: their return value can't be checked (seccomp never
