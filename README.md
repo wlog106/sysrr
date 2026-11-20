@@ -189,6 +189,11 @@ works). Rows whose binary is missing fail.
   with `--name`, so restore without `--name`.
 - Checkpointing while running fails if the program keeps growing a file in
   the container's own writable layer. Write such files to a volume instead.
+- A checkpoint that catches a `vfork` before its `exec` (Python's `subprocess`
+  uses vfork) fails after 10 seconds with "Unseizable non-zombie ... state D".
+  Just checkpoint again. Every attempt, failed or not, starts a generation, so
+  replay the generation of the attempt that worked (`sysrr_replay` without
+  `-g` takes the last one; `sysrr_dump -s` lists them).
 
 More detail:
 

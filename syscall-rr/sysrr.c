@@ -11,6 +11,8 @@
 #include <time.h>
 #include <unistd.h>
 #include <getopt.h>
+#include <fcntl.h>
+#include <sys/syscall.h>
 #include <dirent.h>
 #include <sys/stat.h>
 #include <sys/utsname.h>
@@ -41,9 +43,10 @@ static int handle_rec(void *ctx, void *data, size_t sz)
 		break;
 	case REC_MARKER: {
 		struct rec_marker *m = data;
-		static const char *k[] = { "?", "CRIU seized", "CRIU detached", "new generation" };
+		static const char *k[] = { "?", "CRIU seized", "CRIU detached", "new generation",
+					   "in flight at stop" };
 		fprintf(stderr, "[marker] %s tid=%u by pid %u -> gen %u\n",
-			k[m->kind < 4 ? m->kind : 0], m->tid, m->tracer, m->gen);
+			k[m->kind < 5 ? m->kind : 0], m->tid, m->tracer, m->gen);
 		break;
 	}
 	}
@@ -147,6 +150,57 @@ static int add_descendants(struct sysrr_bpf *skel, int root)
 			closedir(d);
 	}
 	return added;
+}
+
+#ifndef PIDFD_THREAD
+#define PIDFD_THREAD O_EXCL
+#endif
+
+/* Threads still inside a syscall when recording stops (blocked in epoll_wait,
+ * futex...) took a seq at entry that no REC_SYSCALL will commit.  Say so in the
+ * log, so sysrr_dump does not count it as a lost record. */
+static void note_in_flight(struct sysrr_bpf *skel, int root, int follow)
+{
+	int sfd = bpf_map__fd(skel->maps.tstate), tfd = bpf_map__fd(skel->maps.targets);
+	__u32 key, next, procs[4096];
+	int np = 0;
+
+	if (follow) {
+		for (int r = bpf_map_get_next_key(tfd, NULL, &next); r == 0 && np < 4096;
+		     r = bpf_map_get_next_key(tfd, &key, &next))
+			procs[np++] = key = next;
+	} else {
+		procs[np++] = root;
+	}
+	for (int i = 0; i < np; i++) {
+		char path[64];
+		snprintf(path, sizeof(path), "/proc/%u/task", procs[i]);
+		DIR *d = opendir(path);
+		for (struct dirent *de; d && (de = readdir(d)); ) {
+			int tid = atoi(de->d_name);
+			struct task_state st;
+			if (tid <= 0)
+				continue;
+			int pfd = syscall(SYS_pidfd_open, tid, PIDFD_THREAD);
+			if (pfd < 0)
+				continue;
+			if (bpf_map_lookup_elem(sfd, &pfd, &st) == 0 && st.active) {
+				struct timespec ts;
+				struct rec_marker m = { .h = { .type = REC_MARKER, .len = sizeof(m),
+							      .seq = st.seq },
+							.kind = M_INFLIGHT, .tid = tid, .gen = st.gen };
+				clock_gettime(CLOCK_MONOTONIC, &ts);
+				m.ts = ts.tv_sec * 1000000000ULL + ts.tv_nsec;
+				if (fwrite(&m, sizeof(m), 1, out) == 1)
+					stats.bytes_written += sizeof(m);
+				else
+					write_failed = 1;
+			}
+			close(pfd);
+		}
+		if (d)
+			closedir(d);
+	}
 }
 
 static void usage(const char *p)
@@ -269,7 +323,12 @@ int main(int argc, char **argv)
 		fprintf(stderr, "ring buffer failed\n");
 		return 1;
 	}
-	if (sysrr_bpf__attach(skel)) {
+	/* sys_exit before sys_enter (the mirror of the stop below): a syscall
+	 * entered meanwhile would take a seq at sys_enter and exit unseen, and the
+	 * thread's next entry would overwrite it: a gap.  With sys_exit first, a
+	 * call already under way is committed as a "no entry" record. */
+	skel->links.sys_exit = bpf_program__attach(skel->progs.sys_exit);
+	if (!skel->links.sys_exit || sysrr_bpf__attach(skel)) {
 		fprintf(stderr, "attach failed: %s\n", strerror(errno));
 		return 1;
 	}
@@ -307,8 +366,16 @@ int main(int argc, char **argv)
 		else
 			empty = 0;
 	}
+	/* sys_enter first: a syscall that enters after this takes no seq, one that
+	 * entered before still commits at sys_exit; what is left open is really in
+	 * flight (with sys_exit gone first, a thread's next entry would overwrite
+	 * the seq of a call that was never committed: a gap) */
+	bpf_link__destroy(skel->links.sys_enter);
+	skel->links.sys_enter = NULL;
+	usleep(20000);
 	sysrr_bpf__detach(skel);
 	ring_buffer__consume(rb);
+	note_in_flight(skel, pid, follow);
 
 	/* sum the per-CPU lost counters */
 	int ncpu = libbpf_num_possible_cpus();

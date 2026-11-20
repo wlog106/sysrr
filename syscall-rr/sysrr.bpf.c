@@ -57,21 +57,7 @@ struct {
 	__type(value, u8);
 } targets SEC(".maps");
 
-struct task_state {
-	u64 seq;
-	u64 ts;
-	s64 nr;                         /* syscall number at entry (rt_sigreturn overwrites orig_ax) */
-	u64 args[6];
-	u32 gen;
-	u32 gen_min;                    /* detached by CRIU: its syscalls belong to the next gen */
-	u16 flags;
-	u16 ndata;
-	u8  active;                     /* inside a recorded syscall */
-	u8  seized;                     /* CRIU currently has this thread */
-	u8  in_fault;                   /* an input could not be copied at sys_enter */
-	u8  ns_ok;                      /* ns_tgid/ns_tid hold this thread's ids */
-	u32 ns_tgid, ns_tid;            /* ids in the target's pid namespace */
-};
+/* struct task_state: sysrr.h (the user side reads it at stop) */
 
 struct {
 	__uint(type, BPF_MAP_TYPE_TASK_STORAGE);

@@ -145,10 +145,25 @@ if [ -n "$CKPT_KICK" ]; then
 	sudo mv $CONF.new $CONF
 	echo "$PID $CKPT_KICK" | sudo tee /run/sysrr-kick >/dev/null
 fi
-ckpt_rc=0
-sudo podman container checkpoint --leave-running $CKPT_OPTS -e "$OUT/ckpt.tar.gz" $SRC >/dev/null || ckpt_rc=$?
+# A checkpoint that lands between a vfork and its exec fails after CRIU's 10 s
+# timeout: the parent sleeps (state D) until the child execs, and CRIU has
+# stopped the child ("Unseizable non-zombie ... state D").  Try again.  A failed
+# attempt still starts a generation in the log (CRIU seized and released the
+# threads), so the replay uses the generation of the attempt that worked.
+GEN=0
+for attempt in 1 2 3; do
+	GEN=$attempt ckpt_rc=0
+	sudo podman container checkpoint --leave-running $CKPT_OPTS -e "$OUT/ckpt.tar.gz" $SRC \
+		>"$OUT/ckpt.txt" 2>&1 || ckpt_rc=$?
+	[ $ckpt_rc != 0 ] || break
+	D=$(sudo podman inspect -f '{{.StaticDir}}' $SRC 2>/dev/null)
+	sudo grep -q 'Unseizable' "$D/dump.log" 2>/dev/null || break
+	echo "checkpoint attempt $attempt failed: it caught a vfork before its exec; again"
+done
+[ $GEN = 1 ] || echo "replaying generation $GEN (one per checkpoint attempt)"
 [ -z "$CKPT_KICK" ] || put_back_rec_conf
 if [ $ckpt_rc != 0 ]; then
+	cat "$OUT/ckpt.txt"
 	# "CRIU checkpointing failed -52" covers every cause: the reason is in dump.log,
 	# which goes away with the container, so show it now
 	D=$(sudo podman inspect -f '{{.StaticDir}}' $SRC 2>/dev/null)
@@ -206,7 +221,7 @@ echo "restored pid $PID2: $(R "grep State /proc/$PID2/status")"
 
 echo "--- replay on $WHERE"
 rc=0
-R "timeout 60 sudo ../sysrr_replay $REPLAY_OPTS -C $DST -g 1 $END_OPT -w '$OUT/replay_out.txt' '$OUT/rec.log'" \
+R "timeout 60 sudo ../sysrr_replay $REPLAY_OPTS -C $DST -g $GEN $END_OPT -w '$OUT/replay_out.txt' '$OUT/rec.log'" \
 	| tee "$OUT/replay.txt" || rc=$?
 get "$OUT/replay_out.txt"
 FLIPS=
@@ -214,7 +229,7 @@ if [ -n "$SEARCH" ] && [ "$SEARCH" != 0 ] && [ $rc = 1 ] && grep -q DIVERGENCE "
 	# With -T, which thread went first where two overlapped is a guess: look
 	# for an order of threads that fits the whole recording (sysrr_search.sh)
 	echo "--- diverged: searching for an order of threads that fits the recording"
-	R "sudo podman rm -f -t 0 $DST >/dev/null 2>&1; ../sysrr_search.sh -n $SEARCH \
+	R "sudo podman rm -f -t 0 $DST >/dev/null 2>&1; ../sysrr_search.sh -n $SEARCH -g $GEN \
 	   -o '$(echo $REPLAY_OPTS | sed 's/-T//')' ${CKPT_OPTS:+-c '$CKPT_OPTS'} \
 	   -i '$OUT/ckpt.tar.gz' '$OUT/rec.log'" | tee "$OUT/search.txt" | tail -3 || true
 	FLIPS=$(sed -n 's/^FOUND -F \([0-9,]*\).*/\1/p' "$OUT/search.txt")
@@ -223,7 +238,7 @@ if [ -n "$SEARCH" ] && [ "$SEARCH" != 0 ] && [ $rc = 1 ] && grep -q DIVERGENCE "
 		echo "--- replay again${FLIPS:+ with -F $FLIPS}"
 		PID2=$(restore_stopped $DST) && [ -n "$PID2" ] || { echo "FAIL: restore failed (see above)"; exit 1; }
 		rc=0
-		R "timeout 60 sudo ../sysrr_replay $REPLAY_OPTS ${FLIPS:+-F $FLIPS} -p $PID2 -g 1 $END_OPT \
+		R "timeout 60 sudo ../sysrr_replay $REPLAY_OPTS ${FLIPS:+-F $FLIPS} -p $PID2 -g $GEN $END_OPT \
 		   -w '$OUT/replay_out.txt' '$OUT/rec.log'" >"$OUT/replay.txt" || rc=$?
 		tail -4 "$OUT/replay.txt"
 		get "$OUT/replay_out.txt"
@@ -288,7 +303,7 @@ case $TARGET in
 ckpt_target)
 	echo
 	echo "--- negative test: replay a log with one flipped byte"
-	./tamper_log.py "$OUT/rec.log" "$OUT/bad.log" 1 3
+	./tamper_log.py "$OUT/rec.log" "$OUT/bad.log" $GEN 3
 	put "$OUT/bad.log"
 	LOG=$OUT/bad.log NEG_OPTS=
 	;;
@@ -308,7 +323,7 @@ if [ $TARGET = fd_target ] && R "sudo test -e /proc/$PID3/fd/3"; then
 	exit $fail
 fi
 rc=0
-R "sudo ../sysrr_replay $NEG_OPTS -p $PID3 -g 1 -e kill -w '$OUT/bad_out.txt' '$LOG'" \
+R "sudo ../sysrr_replay $NEG_OPTS -p $PID3 -g $GEN -e kill -w '$OUT/bad_out.txt' '$LOG'" \
 	| tee "$OUT/bad.txt" || rc=$?
 get "$OUT/bad_out.txt"
 nb=$(wc -l <"$OUT/bad_out.txt")

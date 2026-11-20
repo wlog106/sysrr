@@ -236,6 +236,16 @@ recorded process has ended).  sysrr exits 3 when the log could not be written
   112 bytes next to a 16-byte sockaddr_in); getxattr/listxattr/getgroups with
   size 0 write nothing; select/pselect6/ppoll write the time left back (now
   recorded and replayed).
+Also 2026-11-20 (user asked to look into the dump's missing seqs): sysrr_dump
+called complete logs incomplete. Two causes, both fixed. (1) At attach,
+sys_enter was attached before sys_exit: a syscall in that window took a seq at
+entry and exited unseen, and the next entry overwrote it (gaps at the start of
+the log: seq 2, 3, 5). sys_exit is now attached first, so a call under way is
+committed as a no-entry record. (2) At stop, the mirror image: sys_enter is now
+detached first (then 20 ms, then the rest), and threads still inside a syscall
+get an M_INFLIGHT marker (h.seq = the uncommitted seq; struct task_state moved
+to sysrr.h so the user side reads it through a thread pidfd). pool_target
+recorded with -p and stopped with Ctrl-C: 8 of 8 logs complete; before, about half the runs reported 1 to 5 missing seqs.
 Open: the 0x89xx ioctls copy a 40-byte ifreq also for SIOCGSTAMP(NS)/SIOCATMARK/
 FIOGETOWN/SIOCGPGRP (smaller outputs); sysrr_dump counts a syscall still blocked
 at Ctrl-C as a missing seq; -C does not follow processes moved into a sub-cgroup.

@@ -106,15 +106,15 @@ That process and all its threads. Recording stops by itself when the process is 
 
 ### A container: -C NAME
 
-sysrr asks podman for the container's first process and turns on follow mode, so every process in the container is recorded, including new ones.
+sysrr asks podman for the container's first process and turns on follow mode, so that process and every process it forks are recorded, including new ones. A process started with `podman exec` is not a child of the container's first process, so it is not recorded.
 
 ### Follow mode: -f
 
-A table of recorded processes (up to 4096 at a time) decides who is recorded. At start, the processes that already exist under the target are added; then each fork adds its child. A cgroup filter first rejects everything outside the container with one compare.
+A table of recorded processes (up to 4096 at a time) decides who is recorded. The programs are attached first; then the processes that already exist under the target are added, so a fork that happens meanwhile is caught by the fork hook instead of being missed. From then on each fork adds its child. A cgroup filter first rejects everything outside the container with one compare.
 
 ### Ended processes are forgotten
 
-When a process's last thread ends, it leaves the table. Without this, the table filled up after 4096 processes and new ones went unrecorded, silently: a test that ran /bin/true 6000 times logged only 4094 of them; now it logs all of them. In follow mode sysrr stops by itself once every recorded process has ended.
+When a process's last thread ends, it leaves the table. Without this, the table filled up after 4096 processes and new ones went unrecorded, silently: a test that ran /bin/true 6000 times logged only 4094 of them; now it logs all of them. A child that cannot be added because the table is full is counted as lost, so the warning shows. The last threads of a process keep their exit records even after the process has left the table. In follow mode sysrr stops by itself once the table has been empty for three polls in a row (every recorded process has ended).
 
 **How it connects:** Follow mode, Pid pinning, Test suite.
 
@@ -124,11 +124,11 @@ A generation is the part of the log after a checkpoint: generation N is what a r
 
 ### Spotting the checkpoint
 
-CRIU checkpoints a process by attaching to every thread with ptrace, running "parasite" code inside it, and detaching. The Recorder sees these calls, counts how many recorded threads CRIU holds, and when the last one is released, the generation goes up by one. Markers in the log show each step.
+CRIU checkpoints a process by attaching to every thread with ptrace, running "parasite" code inside it, and detaching. The Recorder sees these calls, counts how many recorded threads CRIU holds, and when the last one is released, the generation goes up by one. An attach counts only when it succeeded (a failed one, on a thread that just died or that strace holds, used to stay counted and freeze the generation), and a thread that dies while CRIU holds it releases its count. Markers in the log show each step. A checkpoint attempt that fails still moves the generation.
 
 ### A boundary per thread
 
-CRIU releases threads one at a time, and a thread released early already makes syscalls before the counter moves (redis's main thread once made 8 in about 0.1 ms). So each thread gets its own minimum generation (`gen_min`) at its release.
+CRIU releases threads one at a time, and a thread released early already makes syscalls before the counter moves (redis's main thread once made 8 in about 0.1 ms). So each thread gets its own minimum generation (`gen_min`) at its release, and a thread or process it creates in that window inherits it.
 
 ### Parasite syscalls
 
@@ -172,7 +172,8 @@ Exit status of sysrr: 0 means the log is complete, 2 that records were lost (rec
 
 sysrr_dump prints a log in readable form and checks that it is complete.
 
-- `-s`: summary. Syscalls per generation, records lost, missing sequence numbers, incomplete syscalls; "OK: log is complete" or a warning.
+- `-s`: summary. Syscalls per generation, records lost, missing sequence numbers, incomplete syscalls, calls in flight at stop; "OK: log is complete" or a warning.
+- Calls in flight at stop: a thread blocked in a syscall (epoll_wait, a futex wait) when recording stops took a sequence number that no record commits. sysrr writes an "in flight" marker for each such call when it stops, so the dump does not count it as a gap. sysrr also attaches its exit hook before its entry hook, and detaches the entry hook first, so no call made during start or stop leaves a hole.
 - `-g N`: only generation N, which is what a restore of checkpoint N replays.
 - `-a`: also show CRIU's parasite syscalls. `-x`: hex dump of the buffers.
 - `-r`: race check. With a log made by `sysrr -r` (about 11% slower), inputs are copied again at exit; sysrr_dump shows buffers another thread changed while the syscall was using them. It only catches that kind of race.

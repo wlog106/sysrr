@@ -46,6 +46,8 @@ Faking means answering a syscall from the Log without letting the kernel run it.
 
 sysrr_replay writes the recorded output pieces (the bytes a read returned, a stat struct, a sockaddr) into the copy's memory with process_vm_writev, at the addresses the copy's current arguments give. Then it answers with the recorded return value. So the copy sees the same network data, file contents, clock readings and random bytes as the live program, even on another machine.
 
+Some outputs hold the program's own pointers: a message header (msghdr) names the buffers to fill. The copy's heap can be laid out differently from the live one when several threads allocate, so those pointers are kept as they are in the copy; only the kernel's fields (lengths, flags, how much arrived) come from the Log.
+
 **How it connects:** Log, Recorder, Replay, File descriptors.
 
 ## Running a syscall for real
@@ -94,7 +96,7 @@ File descriptors are put back at the numbers the recording had, so that later re
 
 ### Installing real fds
 
-When a faked call created file descriptors (open, socket, accept, pipe, dup, eventfd, memfd and similar), sysrr_replay installs a real fd at each recorded number with SECCOMP_IOCTL_NOTIF_ADDFD. For open, it is the same file from the container's root, opened without creating or truncating anything. The data still comes from the Log; the fd only has to be real for syscalls that run for real (mmap, close, fchdir) and for live mode.
+When a faked call created file descriptors (open, socket, accept, pipe, dup, eventfd, memfd and similar), sysrr_replay installs a real fd at each recorded number with SECCOMP_IOCTL_NOTIF_ADDFD. For open, it is the same file from the container's root, opened without creating or truncating anything. A relative path is resolved from the container's root after the directory's own path (checked by comparing device and inode), so `..` and absolute symlinks lead where they led live. The data still comes from the Log; the fd only has to be real for syscalls that run for real (mmap, close, fchdir) and for live mode.
 
 ### Stand-ins
 
@@ -112,7 +114,7 @@ Memory pinning makes new mappings land at the address the recording had.
 
 ### Re-issuing mmap at the recorded address
 
-CRIU restores every mapping at its old address, but not the base the kernel uses to place new ones, so a real mmap would land elsewhere and allocators such as jemalloc would take another path. sysrr_replay briefly seizes the thread with ptrace, rewrites the call to ask for the recorded address (MAP_FIXED_NOREPLACE), and lets the kernel restart it. The restarted call runs for real at the right place, in a few hundred microseconds.
+CRIU restores every mapping at its old address, but not the base the kernel uses to place new ones, so a real mmap would land elsewhere and allocators such as jemalloc would take another path. sysrr_replay briefly seizes the thread with ptrace, rewrites the call to ask for the recorded address (MAP_FIXED_NOREPLACE), and lets the kernel restart it. The restarted call runs for real at the right place, in a few hundred microseconds. A moving mremap is pinned the same way (MREMAP_FIXED), but only after checking that the recorded place is free: MREMAP_FIXED would silently unmap whatever is there. If the place is in use, the kernel chooses.
 
 ### Allocator slack
 
@@ -140,9 +142,11 @@ futex, rt_sigreturn, sleeps and reading the monotonic clock fall in this group. 
 
 The end mode, set with -e, decides what happens when the recording is used up or a divergence is found.
 
-- `-e stop` (default): stop the copy with SIGSTOP and keep sysrr_replay running, so the stopped state can be inspected.
-- `-e live`: answer every later syscall with "run it for real", so the copy goes on as a normal program from the recorded state.
+- `-e stop` (default): stop the copy with SIGSTOP and keep sysrr_replay running, so the stopped state can be inspected. Threads held under Serial mode go straight from their hold into the stop, so the frozen state is the one at the end or the divergence.
+- `-e live`: answer every later syscall with "run it for real", so the copy goes on as a normal program from the recorded state. Threads that were waiting for their turn are let go at once.
 - `-e kill`: kill the copy and exit, for scripts.
+
+If the live program was killed by a signal from outside (or a timer, or SIGPIPE), that signal is delivered at the end of the recording, to the process that died live and not to another one.
 
 ### Why the filter cannot be removed
 

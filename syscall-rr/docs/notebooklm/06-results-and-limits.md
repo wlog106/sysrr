@@ -9,7 +9,7 @@ tool Gemini wrote for the same job. The last part lists every known limit.
 ## Key ideas
 
 - A test passes only with byte-identical output, no divergence, and the end of the log reached.
-- The final run on 2026-11-20 passed 30 of 30, recording on one machine and replaying on another.
+- The latest full run on 2026-11-20 passed 30 of 30, recording on one machine and replaying on another.
 - Four tests target known limits: they pass only if the replay reports a divergence instead of going wrong silently.
 - Thread tests can still fail now and then, when the order search does not find a fitting order of threads.
 - Four real servers replay exactly: Redis, memcached, nginx and Apache httpd.
@@ -103,9 +103,11 @@ These tests replay real, unmodified servers and check their state, not just thei
 
 The latest results are the outcomes of the suite runs on 2026-11-20, the day of the comparison with crr.
 
-The final run passed 30 of 30 tests in about 5 minutes. Earlier runs that day
-passed 29 of 29 (before the new sig-ckpt test existed), 28 of 29, and 30 of 30.
-The one failure was procs+thr, where the order search ran out of guesses.
+The latest full run, after the fixes from three code reviews, passed 30 of 30
+tests in about 5 minutes. Earlier runs that day passed 29 of 29 (before the
+sig-ckpt test existed), 28 of 29, 30 of 30, and twice 28 of 30. Every failure
+was either a search miss in a thread test or the python test's checkpoint
+catching a vfork (now retried, see Limits).
 
 Some sizes from one run: syscalls reproduced 3900 lines, thread-new 884, fork
 373. In sig-ckpt the live signal landed when a loop counter stood at 74,042,352,
@@ -130,9 +132,14 @@ tries other guesses after a divergence; it can run out. Measured rounds:
 | 2026-11-20, across machines | procs+thr, new version | 5 of 5 (one via search) |
 | 2026-11-20, across machines | pool, pool-burst, procs+thr, sig-ckpt, py-threads (honest) | 3 of 3 each |
 | 2026-11-20, across machines | threads | 2 of 3 |
+| 2026-11-20, after the review fixes | procs+thr, pool-burst | 3 of 3 each |
+| 2026-11-20, after the review fixes | pool | 2 of 3 |
+| 2026-11-20, with the checkpoint retry | python | 4 of 4 (one needed a second checkpoint) |
 
-In the threads failure the replay reached the end without a divergence, yet
-the output differed; not yet diagnosed.
+In the threads failure the replay reached the end without a divergence (every
+write matched the log), yet the output comparison failed. The likely cause is
+two threads writing at nearly the same moment, whose order in the pipe differs
+from their order in the log; the test now prints the differing lines to tell.
 
 **How it connects:** Serial mode (-T), Order search, Divergence.
 
@@ -261,7 +268,7 @@ These limits concern when a recorded signal reaches the restored thread.
 - A signal that arrived while a thread was computing comes back at its previous syscall, so a little early. Exact delivery would need a hardware branch counter, as the rr debugger uses.
 - SIGCHLD from real children arrives at its own time, so shell scripts often diverge (reported, never a hang).
 - The delivered signal's details say it came from the replayer, not the original sender.
-- A signal pending at the checkpoint with an SA_NODEFER handler could be delivered twice (not seen in a test).
+- A signal pending at the checkpoint with an SA_NODEFER handler is recognised only if the restored thread stands exactly at the handler's first instruction; otherwise it could be delivered twice (not seen in a test).
 
 ### Checkpoint
 
@@ -269,7 +276,7 @@ These limits make the checkpoint itself fail, before any replay.
 
 - An open TCP connection makes CRIU refuse ("checkpointing failed -52") unless `--tcp-established` is given to both the checkpoint and the restore.
 - A file the program keeps growing in the container's own layer breaks the restore. Write it to a volume instead.
-- A process in uninterruptible sleep (state D) cannot be frozen within CRIU's 10 seconds. Seen once; the next three rounds passed.
+- A checkpoint that catches a vfork before its exec fails after CRIU's 10 seconds: the parent sleeps in state D waiting for the child, and CRIU has stopped the child. This was the "python" test's flake (2 of 30 checkpoints while recording, 0 of 30 without). Retrying works; the tests retry up to three times and replay the Generation of the attempt that worked (a failed attempt still counts as a Generation).
 
 ### Live mode and the filter
 

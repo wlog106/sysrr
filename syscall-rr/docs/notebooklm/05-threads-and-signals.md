@@ -194,7 +194,7 @@ Only signals the replay cannot produce by itself come from the log.
 Replayed: signals from a timer (alarm, setitimer, timer_create) and signals
 sent from outside (podman kill, a shell). Not taken from the log, on purpose:
 
-- a signal the program sent itself: its kill call runs for real and sends it again;
+- a signal the program sent itself: its kill call runs for real and sends it again (a received signal is matched to a recorded kill aimed at that process or thread; a kill to a whole group can match every receiver);
 - SIGCHLD: the real children send it;
 - SIGPIPE: it goes out with the failed write's EPIPE error;
 - faults such as SIGSEGV: the instruction faults again;
@@ -213,6 +213,15 @@ three ways.
 - **The recorded call is not made in the replay** (a sleep that was only
   timing). The signal goes out before the call the thread makes instead, with
   code -513, "always restart".
+
+Two signals of the same number recorded at one call need care: the kernel
+keeps only one of a standard signal pending, so sending both at once would run
+the handler once. The replayer sends one and carries the other to the thread's
+next call; if that call is inside the handler, the signal waits there until the
+handler returns, as live. A signal is marked delivered only once delivery has
+worked, so one that could not go out is tried again at the next call. In Serial
+mode a signal handler is user code like any other: it runs only in the thread's
+turn.
 
 The timer test gets 71 of 71 signals back at the right syscall, the
 outside-signal test 8 of 8.
@@ -305,8 +314,12 @@ always be put back in the live order.
 
 ### SA_NODEFER handlers
 
-A handler with SA_NODEFER does not block its own signal, so if such a signal
-was pending at the checkpoint, the replay could deliver it twice.
+A handler with SA_NODEFER does not block its own signal, so the usual sign that
+the restore already delivered a pending signal (the signal is blocked in
+SigBlk) is missing. The replayer also checks where the restored thread stands:
+exactly at that signal's handler means the restore delivered it, so it is not
+sent again. A thread restored a few instructions into such a handler would
+still get it twice.
 
 ## Where in the code
 

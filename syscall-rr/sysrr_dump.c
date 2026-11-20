@@ -39,6 +39,8 @@ static int opt_gen = -1, opt_all, opt_hex, opt_summary, opt_races;
 #define MAX_GEN 64
 static struct { unsigned long long syscalls, dump, data_bytes; } per_gen[MAX_GEN];
 static unsigned long long problems, races, max_seq, nseen;
+static unsigned long long *inflight_seqs;      /* M_INFLIGHT markers */
+static size_t ninflight;
 static unsigned char *seen;    /* bitmap of seqs seen, for gap detection */
 static size_t seen_cap;
 
@@ -312,6 +314,15 @@ int main(int argc, char **argv)
 		case REC_MARKER: {
 			struct rec_marker *m = (void *)buf;
 			static const char *k[] = { "?", "CRIU SEIZE", "CRIU DETACH", "NEW GENERATION" };
+			if (m->kind == M_INFLIGHT) {    /* blocked in a syscall at stop: not a gap */
+				if (!opt_summary && !opt_races)
+					printf("#%-7llu %u: in flight when recording stopped\n",
+					       (unsigned long long)m->h.seq, m->tid);
+				mark_seen(m->h.seq);
+				inflight_seqs = realloc(inflight_seqs, (ninflight + 1) * sizeof(*inflight_seqs));
+				inflight_seqs[ninflight++] = m->h.seq;
+				break;
+			}
 			if (!opt_summary)
 				printf("==== %s tid %u (tracer pid %u) at %.6f -> gen %u ====\n",
 				       k[m->kind < 4 ? m->kind : 0], m->tid, m->tracer,
@@ -340,7 +351,7 @@ int main(int argc, char **argv)
 	}
 
 	/* leftover DATA of a syscall still in flight at the end is not an orphan */
-	size_t inflight = 0;
+	size_t inflight = ninflight;
 	for (size_t i = 0; i < npend; ) {
 		unsigned long long seq = pend[i].d->h.seq;
 		unsigned tid = pend[i].d->tid;
@@ -348,10 +359,13 @@ int main(int argc, char **argv)
 			i++;
 			continue;
 		}
-		if (!opt_summary && !opt_races)
+		int marked = 0;                         /* (counted at its marker already) */
+		for (size_t k = 0; k < ninflight; k++)
+			marked |= inflight_seqs[k] == seq;
+		if (!opt_summary && !opt_races && !marked)
 			printf("#%-7llu %u: in flight when recording stopped, inputs captured\n", seq, tid);
 		mark_seen(seq);                         /* not a gap either */
-		inflight++;
+		inflight += !marked;
 		for (size_t j = i; j < npend; ) {
 			if (pend[j].d->h.seq == seq) {
 				free(pend[j].d);

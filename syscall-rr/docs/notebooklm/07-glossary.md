@@ -24,6 +24,10 @@ A piece of user memory copied for a syscall: an input (the bytes a `write` sends
 A counter taken at every syscall entry, shared by all threads, so it gives the order in which syscalls started. Strict order and serial mode use it to order threads, and it ties data records to their syscall.
 **Related:** Record, Strict order (-S), Serial mode (-T)
 
+### In-flight marker
+A note sysrr writes when it stops, one per thread still inside a syscall (blocked in epoll_wait or a futex wait, say). That call took a seq number that no record will commit; the marker tells sysrr_dump it is not a lost record.
+**Related:** Seq number, Record, sysrr_dump
+
 ### Generation
 The part of the log after checkpoint N is generation N; before the first checkpoint it is generation 0. A restore of checkpoint N needs exactly generation N, because that is what the live program did after that moment. The recorder starts a new generation when CRIU lets go of the target's threads.
 **Related:** Checkpoint, Log, Replay, parasite code
@@ -209,6 +213,10 @@ Kernel code mapped into every process, so that some calls (`clock_gettime`, `tim
 ### clocksource (acpi_pm, kvm-clock, tsc)
 The hardware clock the kernel reads. With tsc or kvm-clock the vDSO answers clock reads by itself; with acpi_pm it cannot, so clock reads become real syscalls that are recorded and replayed. sysrr uses acpi_pm on both machines.
 **Related:** vDSO, sysrr_restore.sh, Faked answer
+
+### vfork
+A fork in which the parent sleeps (state D) until the child calls exec; Python's subprocess uses it. A checkpoint that stops the child in that gap cannot seize the parent and fails after CRIU's 10 seconds; trying again works.
+**Related:** CRIU, Checkpoint, Generation
 
 ### futex
 The kernel's wait-and-wake primitive under mutexes and condition variables. In sysrr, futex calls show how locks passed between threads: they are timing-only, and serial mode answers recorded waits from the log.

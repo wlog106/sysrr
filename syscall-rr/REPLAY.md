@@ -828,6 +828,16 @@ before the container is removed. Fix: `CKPT_OPTS=--tcp-established`
 option together with `--name`, so the copy keeps the original's name. Used by
 `net`, `perl`, `asyncio`. This probably explains the old "unconfirmed -52" too
 where TCP was involved; the `python` test has no TCP, so its -52 is still open.
+2026-11-20, later: **cause found**. In the stuck checkpoints the parent sits in
+state D in `__do_sys_vfork` (kernel_clone, waiting for its vfork child) and the
+child is in `ptrace_stop`: CRIU stopped the child before its exec, so the parent
+can never be seized. Python's subprocess uses vfork. Looping checkpoints of
+py_target: 2 of 30 failed while recording, 0 of 30 without (recording slows the
+child's syscalls, widening the window). A failed attempt still moves the
+generation (31 generations for 30 attempts), so test_replay.sh retries the
+checkpoint up to three times when dump.log says "Unseizable" and replays
+generation $GEN (search and tamper too); python 4 of 4 with one retry. README
+notes it for users.
 2026-11-20, python -52 seen once more, with dump.log: "Timeout reached",
 "Unseizable non-zombie N found, state D": CRIU could not freeze a process sleeping
 uninterruptibly (probably the subprocess child in exec or on disk I/O) within its

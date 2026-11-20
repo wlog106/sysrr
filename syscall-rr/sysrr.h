@@ -60,6 +60,25 @@ enum marker_kind {
 	M_SEIZE  = 1,     /* CRIU attached to a target thread */
 	M_DETACH = 2,     /* CRIU released a target thread */
 	M_GEN    = 3,     /* last thread released: a new generation starts */
+	M_INFLIGHT = 4,   /* written at stop: the thread was inside syscall h.seq,
+			   * which therefore has no REC_SYSCALL (not a gap) */
+};
+
+/* per-thread recorder state (BPF task storage) */
+struct task_state {
+	u64 seq;
+	u64 ts;
+	s64 nr;                         /* syscall number at entry (rt_sigreturn overwrites orig_ax) */
+	u64 args[6];
+	u32 gen;
+	u32 gen_min;                    /* detached by CRIU: its syscalls belong to the next gen */
+	u16 flags;
+	u16 ndata;
+	u8  active;                     /* inside a recorded syscall */
+	u8  seized;                     /* CRIU currently has this thread */
+	u8  in_fault;                   /* an input could not be copied at sys_enter */
+	u8  ns_ok;                      /* ns_tgid/ns_tid hold this thread's ids */
+	u32 ns_tgid, ns_tid;            /* ids in the target's pid namespace */
 };
 
 /* A record structure is consist of a hdr and one of the four record type */

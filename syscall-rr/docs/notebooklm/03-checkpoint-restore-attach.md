@@ -54,7 +54,9 @@ CRIU is the program podman uses for checkpoints. It works in three steps:
 
 ### What the Recorder sees
 
-The Recorder watches `ptrace` calls made by `criu`. Syscalls made while a thread is seized are the parasite's: they are flagged and never replayed. When the last thread is let go, the Generation number goes up by one.
+The Recorder watches `ptrace` calls made by `criu`. A seize counts only once it has succeeded. Syscalls made while a thread is seized are the parasite's: they are flagged and never replayed. When the last thread is let go, the Generation number goes up by one. A thread created while CRIU is still letting the others go belongs to the new Generation too, like its parent.
+
+Every checkpoint attempt starts a Generation, even one that fails: CRIU seizes and releases the threads either way. So the Generation to replay is the number of the attempt that worked, failed attempts included. `sysrr_replay` without `-g` takes the last Generation in the log.
 
 ### The syscall in flight
 
@@ -66,7 +68,7 @@ The program is usually blocked in a syscall when it is frozen. Most such calls a
 
 - **An open TCP connection.** Add `--tcp-established` to the checkpoint and to the restore. podman does not accept that option together with `--name`, so the copy keeps the original's name.
 - **A file the program keeps growing in the container's own writable layer.** CRIU notes its size during the dump, podman archives the file afterwards, and the restore then fails with "bad size". Write such files to a volume or a tmpfs instead.
-- **A process stuck in state D** (uninterruptible sleep). CRIU gives up after 10 seconds ("Unseizable non-zombie ... state D"). Trying again usually works.
+- **A vfork caught before its exec.** After `vfork`, the parent sleeps in state D (uninterruptible) until the child calls `exec`. If CRIU stops the child in that gap, the parent can never wake up, CRIU cannot seize it, and the dump fails after 10 seconds ("Unseizable non-zombie ... state D"). Python's `subprocess` uses vfork. Recording makes the gap a little longer (the child's syscalls are recorded): in a test, 2 of 30 checkpoints of the Python target failed while recording, 0 of 30 without. Trying again works; the tests retry up to three times and replay the Generation of the attempt that worked.
 - CRIU also refuses an open POSIX message queue and an inotify watch on overlayfs.
 
 **How it connects:** Recorder, Log, Generation, Restore, Test suite.
