@@ -25,13 +25,13 @@ all: $(APPS) $(TARGETS)
 syscall_names.h: /usr/include/$(MULTIARCH)/asm/unistd_64.h
 	awk '/^#define __NR_/ { sub("__NR_", "", $$2); printf "[%s] = \"%s\",\n", $$3, $$2 }' $< > $@
 
-sysrr: sysrr.c sysrr.skel.h sysrr.h
+sysrr: sysrr.c sysrr.skel.h sysrr.h podman_pid.h
 	$(CC) $(CFLAGS) $< -o $@ $(LIBBPF)
 
 sysrr_dump: sysrr_dump.c sysrr.h syscall_names.h
 	$(CC) $(CFLAGS) $< -o $@
 
-sysrr_replay: sysrr_replay.c sysrr.h syscall_names.h
+sysrr_replay: sysrr_replay.c sysrr.h syscall_names.h podman_pid.h
 	$(CC) $(CFLAGS) $< -o $@
 
 raw_sysrr: raw_sysrr.c raw_sysrr.skel.h

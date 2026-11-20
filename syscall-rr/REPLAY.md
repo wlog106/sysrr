@@ -514,6 +514,51 @@ candidate window, or more than two flips are needed at one point.
 Earlier saved recordings: pool-burst 6 of 6 found (5 to 28 replays); httpd
 recordings made before the wait emulation: 4 of 6 found within 40 replays.
 
+## Compared with Gemini's crr (2026-11-20)
+
+The user had Gemini write the same tool (`crr`, "absorbing" sysrr; a copy lived
+on claude-test:/home/xuanhh/crr). Both were run on the same 24 targets, record on
+claude-dev, restore and replay on claude-test, crr with its own harness
+(`run_sysrr_targets.sh`, which runs our tests/ targets).
+
+* **How crr replays**: it traps only ~90 syscalls (a pruned BPF tree) and records
+  only those (an in-kernel bitmap skips the rest, futex, openat, mprotect...
+  included). It matches a notification by **syscall number only**, with an
+  8-record lookahead, and on a mismatch silently "continues live". It never
+  compares arguments or write contents (no memcmp anywhere); writes to pipes and
+  sockets are faked, writes to stdout and regular files run for real.
+* **Results**: crr's harness passes a target at 70% of lines in order or 80% in
+  any order: 20 of 24. Under our rule (byte-identical output, no divergence) it
+  fails syscalls (37 of 3939 lines in order), shell, vdso-random, py-threads,
+  py-procs. vdso-random drifted with `mismatches=0`: not noticed. Our suite: 29 of
+  29 (25 full replays; shell, vdso-random, py-threads, py-procs reported as
+  divergences, which is what those tests require).
+* **crr's pool pass proves nothing**: workers hand results to main over a pipe,
+  crr fakes both ends from the log, so main prints the recorded results whoever
+  did the work. Our replay checks each write against the log, which is why pool
+  is hard for us and easy for crr.
+* **Record overhead** (tests in crr's bench_compare.sh; dd bs=1, 1M syscalls,
+  median of 5): baseline 109 ms, sysrr 299 -> 293 ms after this day's changes,
+  crr 272 ms. Per program (kernel.bpf_stats_enabled): sys_exit about equal
+  (120 vs 130 ns), sys_enter 98 vs 62 ns; the difference is the copy of write()
+  input, i.e. the divergence check. Unrelated processes: sysrr 132 ms, crr 148.
+  crr's "2x faster, 171x smaller" is a gettid loop it does not record at all; in
+  our real-server logs getpid/gettid are at most ~8% (nginx), so skipping them is
+  not worth the lost checks.
+* **Taken from crr**: naming the container (`-C NAME` in sysrr and
+  sysrr_replay; sysrr -C implies -f) and a one-command restore
+  (`sysrr_restore.sh`: leave-stopped for the restore only, acpi_pm, checks state
+  T); test_replay.sh now uses both. Not taken: the CRIU action-script boundary
+  (our criu-ptrace detection is exact per thread already), live continuation
+  (we have `-e live`), the pruned filter (it gives up checks).
+* Suite after the changes: 28 of 29, procs+thr's order search missed once. A/B
+  on procs+thr, 5 rounds each: last commit 4 of 5, new build 5 of 5 (one via
+  search), so the miss is the old search weakness, not the change.
+* crr ideas that may be worth a look later: delivering a recorded signal before
+  a syscall by rewriting the parked thread to -ERESTARTNOINTR under ptrace;
+  skipping, at the first notification, leading signal records already blocked
+  in SigBlk (restored inside the handler).
+
 ## Replay limitations (tell the user when relevant)
 
 * CONTINUE'd syscalls: their return value can't be checked (seccomp never
@@ -634,6 +679,11 @@ before the container is removed. Fix: `CKPT_OPTS=--tcp-established`
 option together with `--name`, so the copy keeps the original's name. Used by
 `net`, `perl`, `asyncio`. This probably explains the old "unconfirmed -52" too
 where TCP was involved; the `python` test has no TCP, so its -52 is still open.
+2026-11-20, python -52 seen once more, with dump.log: "Timeout reached",
+"Unseizable non-zombie N found, state D": CRIU could not freeze a process sleeping
+uninterruptibly (probably the subprocess child in exec or on disk I/O) within its
+10 s.  Not caused by the recorder; the next 3 rounds passed.  A retry of the
+checkpoint would cover it.
 
 2026-11-13: 28 tests (added procs+thr, httpd; pool and pool-burst must now
 pass, with `SEARCH=40`). One full round: 28 of 28. 2026-11-13 evening: 29 tests

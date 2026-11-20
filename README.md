@@ -38,7 +38,7 @@ cd syscall-rr
 make
 ```
 
-This creates `vmlinux.h` from your kernel and builds four tools, plus the
+This creates `vmlinux.h` from your kernel and builds the tools, plus the
 test targets in `tests/`:
 
 | tool | what it does |
@@ -46,6 +46,7 @@ test targets in `tests/`:
 | `sysrr` | records a process's syscalls into a log |
 | `sysrr_dump` | prints a log in readable form |
 | `sysrr_replay` | replays a log into a restored process |
+| `sysrr_restore.sh` | restores a checkpoint left stopped, ready for a replay |
 | `sysrr_search.sh` | when a replay of threads diverges, searches for an order of threads that fits the whole log |
 | `raw_sysrr` | bare recorder, used only to measure overhead |
 
@@ -59,9 +60,12 @@ If bpftool isn't in `/usr/sbin`, run `make BPFTOOL=$(which bpftool)`.
 # make clock reads real syscalls, so they get recorded (see the notes below)
 echo acpi_pm | sudo tee /sys/devices/system/clocksource/clocksource0/current_clocksource
 
-PID=$(sudo podman inspect -f '{{.State.Pid}}' CTR)
-sudo ./sysrr -p $PID -o rec.log        # add -f to follow child processes
+sudo ./sysrr -C CTR -o rec.log         # CTR: the container's name
 ```
+
+`-C` records every process in the container, including new ones. To record a
+single process instead, give its host pid: `sudo ./sysrr -p PID -o rec.log`
+(add `-f` to follow the processes it forks).
 
 Leave it running. In another terminal, checkpoint the container without
 stopping it:
@@ -83,7 +87,7 @@ Check the log:
 
 ### 2. Restore and replay (machine B, or the same machine)
 
-Copy `ckpt.tar.gz` and `rec.log` over first. The checkpoint belongs to root,
+Copy `ckpt.tar.gz`, `rec.log` and the tools over first. The checkpoint belongs to root,
 so copy it as root (`sudo cat ckpt.tar.gz | ssh B 'cat > ckpt.tar.gz'`). The
 container's image must exist on B too (`podman pull`, or `podman save | ssh B
 podman load`), and so must any directory the container mounts. Then:
@@ -92,19 +96,20 @@ podman load`), and so must any directory the container mounts. Then:
 # once per boot: makes podman load its AppArmor profile
 sudo podman run --rm docker.io/library/debian:trixie-slim true
 
-# the same clock source as on machine A
-echo acpi_pm | sudo tee /sys/devices/system/clocksource/clocksource0/current_clocksource
-
-# restore the container stopped, so it can't make any syscall yet
-# (if you already have an /etc/criu/default.conf, save it first and put it back)
-sudo mkdir -p /etc/criu
-echo leave-stopped | sudo tee /etc/criu/default.conf
-sudo podman container restore --import ckpt.tar.gz --name NEW
-sudo rm /etc/criu/default.conf
+# restore as container NEW, stopped, so it can't make any syscall yet
+sudo ./sysrr_restore.sh ckpt.tar.gz NEW
 
 # replay
-sudo ./sysrr_replay -p $(sudo podman inspect -f '{{.State.Pid}}' NEW) -g 1 rec.log
+sudo ./sysrr_replay -C NEW -g 1 rec.log
 ```
+
+`sysrr_restore.sh` does three things podman can't: it tells CRIU to leave the
+restored process stopped (by adding `leave-stopped` to
+`/etc/criu/default.conf` for the restore only, then putting the file back as
+it was), it switches the clock source to `acpi_pm` like on machine A, and it
+checks that the process really is stopped. For a checkpoint taken with
+`--tcp-established`, pass that on: `sysrr_restore.sh -c --tcp-established
+ckpt.tar.gz` (podman then keeps the original name).
 
 `sysrr_replay` prints each syscall it answers. It reports "diverged" as soon
 as the restored process asks for something different from the recording.
@@ -116,7 +121,8 @@ each attempt):
 
 ```
 ./sysrr_search.sh -i ckpt.tar.gz -g 1 rec.log      # prints e.g. FOUND -F 4104,4174
-sudo ./sysrr_replay -T -F 4104,4174 -p PID -g 1 rec.log
+sudo ./sysrr_restore.sh ckpt.tar.gz NEW
+sudo ./sysrr_replay -T -F 4104,4174 -C NEW -g 1 rec.log
 ```
 
 The flips it needed mark the places where the program depended on which
@@ -126,6 +132,7 @@ Useful options:
 
 | option | meaning |
 |---|---|
+| `-C NAME` / `-p PID` | the restored container, by name or by its first process's host pid |
 | `-g N` | which generation to replay (match the checkpoint you restored) |
 | `-S` | keep the recorded order of syscalls across threads |
 | `-T` | run threads one at a time in recorded order (use this when threads share memory or locks) |

@@ -18,6 +18,7 @@
 #include <bpf/bpf.h>
 #include "sysrr.h"
 #include "sysrr.skel.h"
+#include "podman_pid.h"
 
 static volatile sig_atomic_t stop;
 static FILE *out;
@@ -150,8 +151,10 @@ static int add_descendants(struct sysrr_bpf *skel, int root)
 static void usage(const char *p)
 {
 	fprintf(stderr,
-		"usage: %s -p PID [-f] [-r] [-t] [-o FILE] [-b MB]\n"
+		"usage: %s -p PID | -C NAME [-f] [-r] [-t] [-o FILE] [-b MB]\n"
 		"  -p PID   host pid of the process to record\n"
+		"  -C NAME  record a podman container: its first process and every\n"
+		"           process in it, existing or new (implies -f)\n"
 		"  -f       follow: also record processes it forks\n"
 		"  -r       race check: copy input buffers again at syscall exit, so\n"
 		"           sysrr_dump can show inputs changed during the syscall\n"
@@ -167,9 +170,14 @@ int main(int argc, char **argv)
 	const char *outpath = "sysrr.log";
 	int pid = 0, follow = 0, race = 0, any_tracer = 0, ring_mb = 64, opt;
 
-	while ((opt = getopt(argc, argv, "p:frto:b:")) != -1) {
+	while ((opt = getopt(argc, argv, "p:C:frto:b:")) != -1) {
 		switch (opt) {
 		case 'p': pid = atoi(optarg); break;
+		case 'C':
+			if (!(pid = podman_pid(optarg)))
+				return 1;
+			follow = 1;
+			break;
 		case 'f': follow = 1; break;
 		case 'r': race = 1; break;
 		case 't': any_tracer = 1; break;

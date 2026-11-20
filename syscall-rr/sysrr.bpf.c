@@ -69,6 +69,8 @@ struct task_state {
 	u8  active;                     /* inside a recorded syscall */
 	u8  seized;                     /* CRIU currently has this thread */
 	u8  in_fault;                   /* an input could not be copied at sys_enter */
+	u8  ns_ok;                      /* ns_tgid/ns_tid hold this thread's ids */
+	u32 ns_tgid, ns_tid;            /* ids in the target's pid namespace */
 };
 
 struct {
@@ -208,7 +210,10 @@ __noinline int emit_buf(u64 ptr, u64 len, u64 seq, u32 tid, u32 meta)
 		x.flags |= F_TRUNC;
 	}
 	n = (x.len + CHUNK_MAX - 1) / CHUNK_MAX;
-	bpf_loop(n, chunk_cb, &x, 0);
+	if (n == 1)                     /* the usual case: skip the loop machinery */
+		chunk_cb(0, &x);
+	else
+		bpf_loop(n, chunk_cb, &x, 0);
 	if (x.fail_at < n)
 		n = x.fail_at;
 	return RES(x.flags, n);
@@ -624,13 +629,21 @@ out:
 static __always_inline void emit_syscall(struct task_state *st, s64 nr, s64 ret,
 					 u64 pid_tgid, u16 extra_flags)
 {
-	struct bpf_pidns_info ns = {};
 	struct rec_syscall *r = bpf_ringbuf_reserve(&events, sizeof(*r), 0);
 	if (!r) {
 		count_lost();
 		return;
 	}
-	bpf_get_ns_current_pid_tgid(pidns_dev, pidns_ino, &ns, sizeof(ns));
+	/* the ids in the namespace do not change for a thread, except when a
+	 * thread other than the leader calls execve: it takes the leader's id
+	 * (sys_exit clears ns_ok after an exec) */
+	if (!st->ns_ok) {
+		struct bpf_pidns_info ns = {};
+		bpf_get_ns_current_pid_tgid(pidns_dev, pidns_ino, &ns, sizeof(ns));
+		st->ns_tgid = ns.tgid;
+		st->ns_tid = ns.pid;
+		st->ns_ok = 1;
+	}
 	r->h.type = REC_SYSCALL;
 	r->h.flags = st->flags | extra_flags;
 	r->h.len = sizeof(*r);
@@ -639,8 +652,8 @@ static __always_inline void emit_syscall(struct task_state *st, s64 nr, s64 ret,
 	r->ts_exit = bpf_ktime_get_ns();
 	r->tgid = pid_tgid >> 32;
 	r->tid = (u32)pid_tgid;
-	r->ns_tgid = ns.tgid;
-	r->ns_tid = ns.pid;
+	r->ns_tgid = st->ns_tgid;
+	r->ns_tid = st->ns_tid;
 	r->gen = st->gen;
 	r->ndata = st->ndata;
 	r->nr = nr;
@@ -752,6 +765,8 @@ int BPF_PROG(sys_exit, struct pt_regs *regs, long ret)
 	r = capture_exit(nr, st->args, ret, st->seq, (u32)pid_tgid);
 	st->flags |= r & 0xff;
 	st->ndata += r >> 8;
+	if ((nr == __NR_execve || nr == __NR_execveat) && ret == 0)
+		st->ns_ok = 0;          /* the thread may have taken the leader's id */
 	emit_syscall(st, nr, ret, pid_tgid, 0);
 	return 0;
 }

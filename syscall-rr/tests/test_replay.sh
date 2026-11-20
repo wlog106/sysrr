@@ -114,7 +114,11 @@ echo "--- record (on $(hostname))"
 # meanwhile break the checkpoint.
 sudo podman run -d --name $SRC --tmpfs /scratch -v "$DIR":/t:ro $IMG /t/$TARGET $ARGS >/dev/null
 PID=$(sudo podman inspect -f '{{.State.Pid}}' $SRC)
-sudo ../sysrr $SYSRR_OPTS -p "$PID" -o "$OUT/rec.log" 2>"$OUT/sysrr.err" &
+# -C NAME records the whole container, as -p PID -f does: use it for those
+case " $SYSRR_OPTS " in
+*" -f "*) sudo ../sysrr ${SYSRR_OPTS/-f/} -C $SRC -o "$OUT/rec.log" 2>"$OUT/sysrr.err" & ;;
+*) sudo ../sysrr $SYSRR_OPTS -p "$PID" -o "$OUT/rec.log" 2>"$OUT/sysrr.err" & ;;
+esac
 sleep 2
 if ! sudo podman container checkpoint --leave-running $CKPT_OPTS -e "$OUT/ckpt.tar.gz" $SRC >/dev/null; then
 	# "CRIU checkpointing failed -52" covers every cause: the reason is in dump.log,
@@ -144,7 +148,7 @@ sudo podman rm -f -t 0 $SRC >/dev/null
 
 if [ -n "$REMOTE" ]; then
 	echo "--- copy to $REMOTE: tests dir + sysrr_replay (same path), checkpoint, log"
-	tar -C .. -cf - sysrr_replay sysrr_search.sh tests | $SSH "$REMOTE" "tar -C '$DIR/..' -xf -"
+	tar -C .. -cf - sysrr_replay sysrr_search.sh sysrr_restore.sh tests | $SSH "$REMOTE" "tar -C '$DIR/..' -xf -"
 	put "$OUT/ckpt.tar.gz"
 	put "$OUT/rec.log"
 	if ! $SSH "$REMOTE" "sudo podman image exists $IMG"; then
@@ -159,13 +163,13 @@ WHERE=$(R hostname)
 # "can't write lsm profile -2".  One throwaway container loads it.
 R "sudo podman run --rm $IMG true"
 
-# restore the checkpoint as container $1, left stopped by CRIU; prints its pid
+# restore the checkpoint as container $1, left stopped by CRIU (sysrr_restore.sh,
+# as in the README); prints its pid
 restore_stopped() {
-	local name="--name $1"
+	local name=$1
 	[ -z "$KEEPNAME" ] || name=
-	R "echo leave-stopped | sudo tee $CONF >/dev/null;
-	   sudo podman container restore $CKPT_OPTS --import '$OUT/ckpt.tar.gz' $name >/dev/null; rc=\$?;
-	   $RESTORE_CONF; [ \$rc = 0 ] && sudo podman inspect -f '{{.State.Pid}}' $1"
+	R "sudo ../sysrr_restore.sh ${CKPT_OPTS:+-c '$CKPT_OPTS'} '$OUT/ckpt.tar.gz' $name" |
+		tee -a "$OUT/restore.txt" | sed -n 's/^restored .* pid \([0-9]*\) .*/\1/p'
 }
 
 echo "--- restore on $WHERE, left stopped"
@@ -174,7 +178,7 @@ echo "restored pid $PID2: $(R "grep State /proc/$PID2/status")"
 
 echo "--- replay on $WHERE"
 rc=0
-R "timeout 60 sudo ../sysrr_replay $REPLAY_OPTS -p $PID2 -g 1 $END_OPT -w '$OUT/replay_out.txt' '$OUT/rec.log'" \
+R "timeout 60 sudo ../sysrr_replay $REPLAY_OPTS -C $DST -g 1 $END_OPT -w '$OUT/replay_out.txt' '$OUT/rec.log'" \
 	| tee "$OUT/replay.txt" || rc=$?
 get "$OUT/replay_out.txt"
 FLIPS=

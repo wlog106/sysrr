@@ -149,6 +149,7 @@ podman 5.4.2 + crun 1.21, criu 4.1.1. User xuanhh, passwordless sudo.
 
 ```
 make
+sudo ./sysrr -C CTR [-r] -o rec.log               # record a container (implies -f)
 sudo ./sysrr -p PID [-f] [-r] -o rec.log          # record (Ctrl-C stops)
 sudo podman container checkpoint --leave-running -e ckpt.tar.gz CTR
 ./sysrr_dump -s rec.log                             # integrity
@@ -184,3 +185,21 @@ returns unless bpf_get_current_comm() of the caller is exactly "criu".
 under another name.  Still open: a SEIZE that fails is counted (state changes
 at the caller's sys_enter, before ptrace returns).
 
+
+## Container names, overhead vs crr (2026-11-20)
+
+`-C NAME` (podman_pid.h: runs `podman inspect --type container -f
+{{.State.Pid}} -- NAME`, no shell) records the container's first process and
+sets follow, so every process in it is recorded.  Trap found on the way: podman
+writes the pid and the newline in two writes; closing the pipe after the first
+read killed podman with SIGPIPE and lost a good answer (read to EOF now).
+
+Overhead compared with Gemini's crr (REPLAY.md, "Compared with Gemini's crr"):
+the namespace ids are now looked up once per thread and kept in task storage
+(`ns_ok`, cleared after a successful execve, since a non-leader thread that
+execs takes the leader's id), and a buffer that fits one chunk skips bpf_loop.
+dd bs=1 (1M syscalls): 299 -> 293 ms, baseline 109, crr 272.  What is left is
+the copy of write() input at sys_enter (98 vs 62 ns per sys_enter); crr does
+not record it and cannot check writes.  Measure a program's own cost with
+`sysctl kernel.bpf_stats_enabled=1` and `bpftool prog show` (run_time_ns /
+run_cnt).

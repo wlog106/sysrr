@@ -84,6 +84,7 @@
 #include <time.h>
 #include <unistd.h>
 #include "sysrr.h"
+#include "podman_pid.h"
 
 static const char *names[512] = {
 #include "syscall_names.h"
@@ -3145,9 +3146,13 @@ int main(int argc, char **argv)
 	int gen = -1, c;
 	pid_t pid = 0;
 
-	while ((c = getopt(argc, argv, "p:g:e:STcvNw:F:")) != -1) {
+	while ((c = getopt(argc, argv, "p:C:g:e:STcvNw:F:")) != -1) {
 		switch (c) {
 		case 'p': pid = atoi(optarg); break;
+		case 'C':
+			if (!(pid = podman_pid(optarg)))
+				return 2;
+			break;
 		case 'g': gen = atoi(optarg); break;
 		case 'e':
 			if (!strcmp(optarg, "stop")) opt_end = END_STOP;
@@ -3177,7 +3182,7 @@ int main(int argc, char **argv)
 	}
 	if (!pid || optind != argc - 1) {
 usage:
-		fprintf(stderr, "usage: %s -p PID [-g GEN] [-e stop|live|kill] [-S|-T [-F SEQ,...]] [-c] [-v] "
+		fprintf(stderr, "usage: %s -p PID | -C NAME [-g GEN] [-e stop|live|kill] [-S|-T [-F SEQ,...]] [-c] [-v] "
 			"[-N] [-w FILE] rec.log\n", argv[0]);
 		return 2;
 	}
