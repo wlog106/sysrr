@@ -1266,6 +1266,9 @@ static void search_report(void)
 	printf("\n");
 }
 
+static struct { struct seccomp_notif req; int lfd; } parked[4096];
+static int nparked;
+
 static void finish(const char *why)
 {
 	printf("\n== %s ==\n", why);
@@ -1275,11 +1278,16 @@ static void finish(const char *why)
 		search_report();
 	else if (!strcmp(why, "end of the recording reached"))
 		printf("SEARCH progress: all\n");
+	/* -e stop: stop everyone first, so threads held under -T go from their
+	 * ptrace stop straight into the group stop instead of running on */
+	if (opt_end == END_STOP)
+		kill_all(SIGSTOP);
 	for (size_t i = 0; i < nthrs; i++)      /* -T: threads that never got to start */
 		if (thrs[i].start_tid)
 			ptrace(PTRACE_DETACH, thrs[i].start_tid, 0, 0), thrs[i].start_tid = 0;
 	switch (opt_end) {
-	case END_LIVE:
+	case END_LIVE: {
+		int keep = lfd;                 /* (the caller may answer on it next) */
 		state = LIVE;
 		for (size_t i = 0; i < nthrs; i++)      /* held futex waits: the real kernel now */
 			if (thrs[i].hw_id) {
@@ -1291,14 +1299,22 @@ static void finish(const char *why)
 				lfd = thrs[i].held_lfd;
 				respond(thrs[i].held_id, 1, 0), thrs[i].held_id = 0;
 			}
+		/* threads parked for their turn: no new syscall may come to release
+		 * them (a thread spinning in user space), so let them go now */
+		for (int j = 0; j < nparked; j++) {
+			lfd = parked[j].lfd;
+			respond(parked[j].req.id, 1, 0);
+		}
+		nparked = 0;
+		lfd = keep;
 		printf("   target continues live (real syscalls); Ctrl-C ends it\n");
 		break;
+	}
 	case END_KILL:
 		kill_all(SIGKILL);
 		printf("   target killed (%d process(es))\n", nprocs);
 		break;
 	case END_STOP:
-		kill_all(SIGSTOP);
 		printf("   target %d stopped (SIGSTOP) in that state: inspect it with\n"
 		       "   gdb -p %d or /proc/%d.  Keep this tool running while you do:\n"
 		       "   if it exits, the target's syscalls fail with ENOSYS.  Ctrl-C ends.\n",
@@ -2058,7 +2074,13 @@ static int sends_sigpipe(const struct seccomp_notif *req)
  * after the handler has run (inside it the signal is blocked, so it waits). */
 static int carry_dups(pid_t tid, int *sig, int n)
 {
-	struct thr *t = thr_of(ns_tid_of(tid));
+	u32 ns = ns_tid_of(tid);
+	struct thr *t = NULL;
+	for (int i = 0; i < nalias && !t; i++)  /* a thread running under another id */
+		if (alias[i].actual == ns)
+			t = thr_of(alias[i].recorded);
+	if (!t)
+		t = thr_of(ns);
 	u32 seen = 0;
 	int k = 0;
 
@@ -2497,8 +2519,19 @@ static void end_reached(pid_t g)
 	const struct rec_signal *d = live_death();
 	int dsig = !d ? 0 : d->sig == SIG_EXIT ? d->code & 0x7f : d->sig;
 
+	/* the process that died live: the signal is for it, not for whichever
+	 * process reached the end (a child that died of SIGPIPE inside the
+	 * generation must not take its parent along) */
+	int dying = -1;
+	struct thr *dt = d ? thr_of(d->ns_tid) : NULL;
+	u32 dtgid = dt && dt->n ? dt->q[0]->s->ns_tgid : 0;
+	for (int i = 0; dtgid && i < nprocs; i++)
+		if (ns_tid_of(procs[i].tgid) == dtgid)
+			dying = i;
+	(void)g;
+
 	state = ENDED;
-	if (d && !is_fault(d) && opt_end != END_STOP) {
+	if (d && !is_fault(d) && opt_end != END_STOP && dying >= 0) {
 		/* killed from outside, or by a timer or SIGPIPE: nothing in the
 		 * replay will send it, and it is what the live run did next */
 		printf("\n== end of the recording reached: delivering the signal that killed "
@@ -2506,7 +2539,7 @@ static void end_reached(pid_t g)
 		print_totals();
 		report_live_end();
 		fflush(stdout);
-		kill(g, dsig);
+		syscall(SYS_pidfd_send_signal, procs[dying].pidfd, dsig, NULL, 0);
 		return;
 	}
 	finish("end of the recording reached");
@@ -2750,12 +2783,25 @@ static int handle(struct seccomp_notif *req)
 		return 1;
 	}
 
+	/* -T: a signal handler is user code too; it runs only in this thread's
+	 * turn, and the thread counts as running while it does */
+	int early_sigs = t->ncarry || t->nstart;
+	for (size_t j = t->pos; !early_sigs && j < t->n && t->q[j]->done; j++)
+		early_sigs = t->q[j]->nsig && !t->q[j]->sig_done && is_restart_ret(t->q[j]->s->ret) &&
+			     (long)t->q[j]->s->nr == req->data.nr;
+	if (!early_sigs && t->pos < t->n && t->q[t->pos]->nsig && !t->q[t->pos]->sig_done &&
+	    is_timing_only(t->q[t->pos]->s->nr, t->q[t->pos]->s->args[0]))
+		early_sigs = 1;
+	if (early_sigs && opt_serial && !relax_order && running_thread(t))
+		return 0;
 	if (t->ncarry) {                        /* the same signal again (carry_dups) */
 		int c[64], n = t->ncarry;
 		memcpy(c, t->carry, n * sizeof(*c));
 		t->ncarry = 0;
-		if (return_with_signals(req, -513, 1, c, n) == 0)
+		if (return_with_signals(req, -513, 1, c, n) == 0) {
+			t->running = opt_serial;
 			return 1;
+		}
 		memcpy(t->carry, c, n * sizeof(*c));    /* not delivered: next call */
 		t->ncarry = n;
 	}
@@ -2779,6 +2825,7 @@ static int handle(struct seccomp_notif *req)
 		if (n && signals_then_again(req, -513, g, n) == 0) {
 			t->nstart = 0;
 			n_siglate += late;
+			t->running = opt_serial;
 			return 1;
 		}
 		/* not delivered (the thread was not where ptrace expected it): keep
@@ -2795,6 +2842,7 @@ static int handle(struct seccomp_notif *req)
 			continue;
 		if (signals_then_again(req, k->s->ret, k->sig, k->nsig) == 0) {
 			k->sig_done = 1;
+			t->running = opt_serial;
 			return 1;
 		}
 	}
@@ -2812,6 +2860,7 @@ static int handle(struct seccomp_notif *req)
 				e->sig_done = 1;
 				consume(e);
 				n_slack++;
+				t->running = opt_serial;
 				return 1;
 			}
 		}
@@ -2926,8 +2975,11 @@ static int handle(struct seccomp_notif *req)
 	 * log before this call but gets its turn after (-T orders stretches of user
 	 * code, not kernel calls), or the allocator went its own way.  Forcing the
 	 * address would make the mmap fail; let the kernel choose instead. */
-	int taken = t->pinned != e && needs_pin(req, e) && req->data.nr == SYS_mmap &&
-		    range_mapped(req->pid, e->s->ret, req->data.args[1]);
+	/* (for mremap it matters even more: MREMAP_FIXED would unmap whatever is
+	 * there, silently; there is no NOREPLACE for it) */
+	int taken = t->pinned != e && needs_pin(req, e) &&
+		    range_mapped(req->pid, e->s->ret,
+				 req->data.nr == SYS_mmap ? req->data.args[1] : req->data.args[2]);
 	if (taken) {
 		n_memslack++;
 		note_exec(tgid_of(req->pid));
@@ -3030,9 +3082,11 @@ static int handle(struct seccomp_notif *req)
 		if (fr > 0 && respond(req->id, cont, e->s->ret))
 			return 1;
 		/* second best (a call that ran for real, or made fds): just after it */
-		int nsend = carry_dups(req->pid, nums, nn);
+		int send[nn + 1];               /* (nums stays whole for the -v lines) */
+		memcpy(send, nums, nn * sizeof(*send));
+		int nsend = carry_dups(req->pid, send, nn);
 		for (int i = 0; i < nsend; i++)
-			syscall(SYS_tgkill, tgid_of(req->pid), req->pid, nums[i]);
+			syscall(SYS_tgkill, tgid_of(req->pid), req->pid, send[i]);
 	}
 	e->sig_done = 1;
 	n_sig += piped;
@@ -3115,9 +3169,6 @@ static void report_early_end(void)
 			return;
 		}
 }
-
-static struct { struct seccomp_notif req; int lfd; } parked[4096];
-static int nparked;
 
 /* -T.  The thread whose turn it is sleeps in a lock wait that is not in the
  * recording: the lock is held by a thread parked at a syscall behind it.  Live,

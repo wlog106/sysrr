@@ -155,7 +155,8 @@ static void usage(const char *p)
 		"usage: %s -p PID | -C NAME [-f] [-r] [-t] [-o FILE] [-b MB]\n"
 		"  -p PID   host pid of the process to record\n"
 		"  -C NAME  record a podman container: its first process and every\n"
-		"           process in it, existing or new (implies -f)\n"
+		"           process it forks, existing or new (implies -f; processes\n"
+		"           started with podman exec are not its children: not recorded)\n"
 		"  -f       follow: also record processes it forks\n"
 		"  -r       race check: copy input buffers again at syscall exit, so\n"
 		"           sysrr_dump can show inputs changed during the syscall\n"
@@ -230,9 +231,6 @@ int main(int argc, char **argv)
 		__u32 k = pid;
 		__u8 one = 1;
 		bpf_map__update_elem(skel->maps.targets, &k, sizeof(k), &one, sizeof(one), BPF_ANY);
-		int n = add_descendants(skel, pid);
-		if (n)
-			fprintf(stderr, "follow: %d existing descendant process(es) of %d added\n", n, pid);
 	}
 
 	if (!(out = fopen(outpath, "w"))) {
@@ -275,6 +273,13 @@ int main(int argc, char **argv)
 		fprintf(stderr, "attach failed: %s\n", strerror(errno));
 		return 1;
 	}
+	/* the processes it forked already: after the attach, so a fork that
+	 * happens meanwhile is caught by on_fork rather than missed by both */
+	if (follow) {
+		int n = add_descendants(skel, pid);
+		if (n)
+			fprintf(stderr, "follow: %d existing descendant process(es) of %d added\n", n, pid);
+	}
 
 	signal(SIGINT, on_sig);
 	signal(SIGTERM, on_sig);
@@ -292,11 +297,15 @@ int main(int argc, char **argv)
 		}
 		if (!follow && kill(pid, 0) && errno == ESRCH)
 			stop = 1;
-		/* follow: every recorded process has ended (on_exit forgets them) */
+		/* follow: every recorded process has ended (on_exit forgets them).
+		 * Three polls in a row, so the last threads' exit records arrive. */
+		static int empty;
 		__u32 k;
 		if (follow && bpf_map_get_next_key(bpf_map__fd(skel->maps.targets), NULL, &k) &&
 		    errno == ENOENT)
-			stop = 1;
+			stop = ++empty >= 3;
+		else
+			empty = 0;
 	}
 	sysrr_bpf__detach(skel);
 	ring_buffer__consume(rb);

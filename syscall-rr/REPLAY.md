@@ -688,6 +688,24 @@ As found (pre-existing, in order of weight):
    SigBlk inside the handler: delivered twice. Idea: skip it when the restored
    thread stands at the handler's first instruction (g->handler).
 
+## Second-half and recorder reviews (2026-11-20, after the reset)
+
+Fixed in sysrr_replay.c: a pinned mremap now checks that the recorded place is
+free first (MREMAP_FIXED would silently unmap what is there; the check used to be
+for mmap only); finish() with -e live answers parked notifications too (a thread
+spinning in user space would never release them) and restores the global lfd;
+-e stop sends SIGSTOP before releasing threads held under -T; the signal that
+killed the live run goes to the process that died (it was sent to whichever
+process reached the end: a child's SIGPIPE could kill the parent); under -T the
+early signal paths (carried, leading, interrupted-call, timing-only) wait for the
+thread's turn and mark it running while its handler runs; carry_dups follows a
+renamed thread's alias; -v prints the right signal numbers.
+Recorder fixes: RECORD.md "Recorder review fixes".
+Suite after both sets: 28 of 30 (pool and procs+thr: the order search gave up
+after 11 replays), then 3 rounds: procs+thr 3 of 3, pool-burst 3 of 3, pool 2 of
+3. Search misses on pool happened before (2026-11-13), but 2 of the last 4 pool
+runs missed: watch it; if it stays this high, A/B against b4a5276.
+
 ## Replay limitations (tell the user when relevant)
 
 * CONTINUE'd syscalls: their return value can't be checked (seccomp never

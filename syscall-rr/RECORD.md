@@ -182,8 +182,7 @@ thread as CRIU: one second of `strace -p` marked 163 of the target's own
 syscalls F_DUMP and started a generation no checkpoint belongs to.  It now
 returns unless bpf_get_current_comm() of the caller is exactly "criu".
 `sysrr -t` restores the old rule (any tracer), for a criu binary that runs
-under another name.  Still open: a SEIZE that fails is counted (state changes
-at the caller's sys_enter, before ptrace returns).
+under another name.  (Closed 2026-11-20: a failed SEIZE is no longer counted, see "Recorder review fixes".)
 
 
 ## Container names, overhead vs crr (2026-11-20)
@@ -213,3 +212,30 @@ now deletes the process at its last thread's exit (`p->signal->live.counter ==
 failed insert as lost, and the user side stops when the map is empty (every
 recorded process has ended).  sysrr exits 3 when the log could not be written
 (fwrite or the final fclose), 2 when records were lost.
+
+## Recorder review fixes (2026-11-20, after the reset)
+
+* SEIZE/ATTACH by criu are counted at sys_exit, only when ptrace returned 0
+  (DETACH stays at sys_enter: the thread runs as soon as it is done).  A failed
+  SEIZE used to stay counted for good: `seized_cnt` never reached 0 again, the
+  generation stopped moving, and the thread's syscalls were F_DUMP.  This closes
+  the "still open" note under "Only criu's ptrace counts".
+* A thread that dies while CRIU has it seized releases its count in on_exit
+  (no DETACH will come); the last one moves the generation (M_GEN).
+* on_fork copies `gen_min` to the child (threads and processes) when the parent
+  was let go by CRIU while others are still held: the child's first syscalls
+  belong to the next generation too.
+* on_exit decides "target" by the thread's task storage as well as the map, so
+  the last threads of a process (the map entry is deleted when `signal->live`
+  drops, before they reach the tracepoint) keep their exit records; the user
+  side stops after the map has been empty for three polls in a row.
+* sysrr attaches before scanning the existing descendants (a fork in between
+  was missed by both); -C help text: `podman exec` processes are not children
+  of the container's first process, so not recorded.
+* Capture sizes: recvfrom's address is min(*addrlen, 128) (it overwrote up to
+  112 bytes next to a 16-byte sockaddr_in); getxattr/listxattr/getgroups with
+  size 0 write nothing; select/pselect6/ppoll write the time left back (now
+  recorded and replayed).
+Open: the 0x89xx ioctls copy a 40-byte ifreq also for SIOCGSTAMP(NS)/SIOCATMARK/
+FIOGETOWN/SIOCGPGRP (smaller outputs); sysrr_dump counts a syscall still blocked
+at Ctrl-C as a missing seq; -C does not follow processes moved into a sub-cgroup.

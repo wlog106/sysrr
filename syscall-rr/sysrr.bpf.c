@@ -426,7 +426,12 @@ static __always_inline int capture_exit(s64 nr, u64 *a, s64 ret, u64 seq, u32 ti
 	case __NR_preadv:
 	case __NR_preadv2:          ACC(emit_iov(a[1], a[2], RLEN, seq, TIDK(tid, 1, D_OUT))); break;
 	case __NR_recvfrom:         OUT(1, a[1], RLEN);
-				    if (OK && a[4]) { OUT(4, a[4], SZ_SOCKADDR); OUT(5, a[5], 4); }
+				    /* (the kernel writes min(buffer, actual) bytes; *addrlen
+				     * holds the actual size now) */
+				    if (OK && a[4]) {
+					    u64 al = user_u32(a[5]);
+					    OUT(4, a[4], al < SZ_SOCKADDR ? al : SZ_SOCKADDR); OUT(5, a[5], 4);
+				    }
 				    break;
 	case __NR_recvmsg:          if (OK) ACC(emit_msghdr(a[1], ret, seq, tid, D_OUT)); break;
 	case __NR_getrandom:        OUT(0, a[0], RLEN); break;
@@ -455,10 +460,13 @@ static __always_inline int capture_exit(s64 nr, u64 *a, s64 ret, u64 seq, u32 ti
 
 	/* readiness / waiting */
 	case __NR_poll:
-	case __NR_ppoll:            OUT(0, a[0], a[1] * 8); break;
+	case __NR_ppoll:            OUT(0, a[0], a[1] * 8); if (a[2]) OUT(2, a[2], 16); break;
 	case __NR_select:
 	case __NR_pselect6:         { u64 l = (a[0] + 7) / 8;
-				      OUT(1, a[1], l); OUT(2, a[2], l); OUT(3, a[3], l); }
+				      OUT(1, a[1], l); OUT(2, a[2], l); OUT(3, a[3], l);
+				      /* the time left is written back (glibc's select copies it
+				       * to the caller), even after EINTR */
+				      if (a[4]) OUT(4, a[4], 16); }
 				    break;
 	case __NR_epoll_wait:
 	case __NR_epoll_pwait:
@@ -494,10 +502,10 @@ static __always_inline int capture_exit(s64 nr, u64 *a, s64 ret, u64 seq, u32 ti
 	case __NR_fstatfs:          if (OK) OUT(1, a[1], 120); break;
 	case __NR_getxattr:
 	case __NR_lgetxattr:
-	case __NR_fgetxattr:        OUT(2, a[2], RLEN); break;
+	case __NR_fgetxattr:        OUT(2, a[2], a[3] ? RLEN : 0); break;   /* size 0: only asks how big */
 	case __NR_listxattr:
 	case __NR_llistxattr:
-	case __NR_flistxattr:       OUT(1, a[1], RLEN); break;
+	case __NR_flistxattr:       OUT(1, a[1], a[2] ? RLEN : 0); break;
 	case __NR_name_to_handle_at: if (OK) { OUT(2, a[2], (user_u32(a[2]) & 0xfff) + 8); OUT(3, a[3], 4); } break;
 	case __NR_fcntl:            if (!OK) break;
 				    if (a[1] == 5 /* F_GETLK */ || a[1] == 36 /* F_OFD_GETLK */) OUT(2, a[2], 32);
@@ -534,7 +542,7 @@ static __always_inline int capture_exit(s64 nr, u64 *a, s64 ret, u64 seq, u32 ti
 	case __NR_prlimit64:        OUT(3, a[3], 16); break;
 	case __NR_getresuid:
 	case __NR_getresgid:        if (OK) { OUT(0, a[0], 4); OUT(1, a[1], 4); OUT(2, a[2], 4); } break;
-	case __NR_getgroups:        OUT(1, a[1], RLEN * 4); break;
+	case __NR_getgroups:        OUT(1, a[1], a[0] ? RLEN * 4 : 0); break;
 	case __NR_capget:           if (OK) OUT(1, a[1], 24); break;
 	case __NR_getcpu:           if (OK) { OUT(0, a[0], 4); OUT(1, a[1], 4); } break;
 	case __NR_sched_getparam:   if (OK) OUT(1, a[1], 4); break;
@@ -669,7 +677,11 @@ int BPF_PROG(sys_enter, struct pt_regs *regs, long id)
 	struct task_state *st;
 	int r;
 
-	if (id == __NR_ptrace)
+	/* DETACH at entry: the thread may run (and make syscalls of the new
+	 * generation) as soon as the call is done.  SEIZE/ATTACH at exit, and
+	 * only when it worked: a failed one (the thread died, or strace has it)
+	 * would otherwise stay counted for good. */
+	if (id == __NR_ptrace && regs->di == PTRACE_DETACH)
 		handle_ptrace(regs->di, regs->si);
 	if (target_cgid && bpf_get_current_cgroup_id() != target_cgid)
 		return 0;
@@ -725,6 +737,9 @@ int BPF_PROG(sys_exit, struct pt_regs *regs, long ret)
 	s64 nr = regs->orig_ax;
 	int r;
 
+	if (nr == __NR_ptrace && ret == 0 &&
+	    (regs->di == PTRACE_SEIZE || regs->di == PTRACE_ATTACH))
+		handle_ptrace(regs->di, regs->si);
 	if (target_cgid && bpf_get_current_cgroup_id() != target_cgid)
 		return 0;
 	if (!is_target(pid_tgid >> 32))
@@ -840,9 +855,20 @@ SEC("tp_btf/sched_process_exit")
 int BPF_PROG(on_exit, struct task_struct *p)
 {
 	u32 tgid = p->tgid;
+	struct task_state *st = bpf_task_storage_get(&tstate, p, 0, 0);
 
-	if (!is_target(tgid) || (u32)bpf_get_current_pid_tgid() != p->pid)
+	/* (a thread of a process already forgotten below still has its state:
+	 * the last threads to leave must not lose their exit record) */
+	if ((!st && !is_target(tgid)) || (u32)bpf_get_current_pid_tgid() != p->pid)
 		return 0;
+	/* seized by CRIU and gone: no DETACH will come for it */
+	if (st && st->seized) {
+		st->seized = 0;
+		if (__sync_sub_and_fetch(&seized_cnt, 1) == 0) {
+			__sync_fetch_and_add(&gen, 1);
+			emit_marker(M_GEN, p->pid, gen);
+		}
+	}
 	/* only the last word of a process that ended abnormally, or its leader */
 	if (p->pid == p->tgid || (p->exit_code & 0x7f))
 		emit_signal(SIG_EXIT, p->exit_code, !!(p->exit_code & 0x7f), 0, 0);
@@ -860,7 +886,16 @@ int BPF_PROG(on_fork, struct task_struct *parent, struct task_struct *child)
 {
 	u32 ptgid = parent->tgid, ctgid = child->tgid;
 	u8 one = 1;
+	struct task_state *ps = bpf_task_storage_get(&tstate, parent, 0, 0);
 
+	/* born from a thread CRIU already let go while others are still held:
+	 * the child's syscalls belong to the next generation too */
+	if (ps && ps->gen_min > gen) {
+		struct task_state *cs = bpf_task_storage_get(&tstate, child, 0,
+							     BPF_LOCAL_STORAGE_GET_F_CREATE);
+		if (cs)
+			cs->gen_min = ps->gen_min;
+	}
 	if (!follow || ptgid == ctgid)
 		return 0;
 	if (bpf_map_lookup_elem(&targets, &ptgid) &&
