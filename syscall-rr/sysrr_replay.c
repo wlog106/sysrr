@@ -375,7 +375,7 @@ static size_t nsigs;
  * The signal is delivered as that call returns.  If the signal interrupted the
  * call this is exact.  If it arrived while the thread was computing, it comes
  * early by the length of that computation (counted, and said in the totals). */
-static unsigned long n_sigplan, n_sigloose, n_sigdone;
+static unsigned long n_sigplan, n_sigloose, n_sigdone, n_sigckpt, n_siglate;
 
 static int sig_of_kill(const struct rec_syscall *r)
 {
@@ -1138,9 +1138,15 @@ static void print_totals(void)
 	if (n_sigplan)
 		printf("   signals from a timer or from outside: %lu recorded, %lu delivered%s\n",
 		       n_sigplan, n_sigdone, n_sigdone < n_sigplan ? " (the rest: their place was not reached)" : "");
+	if (n_sigckpt)
+		printf("   %lu of them landed while CRIU had the process frozen: delivered at the "
+		       "checkpoint, where they landed live\n", n_sigckpt);
 	if (n_sigloose)
 		printf("   %lu of them arrived while the thread was computing, not in a syscall: "
 		       "delivered at its previous syscall, so earlier than live\n", n_sigloose);
+	if (n_siglate)
+		printf("   %lu of them arrived while the thread was computing before its first "
+		       "syscall: delivered at that syscall, so later than live\n", n_siglate);
 	if (n_sig)
 		printf("   SIGPIPE delivered with a failed write %lu time(s)\n", n_sig);
 	fflush(stdout);
@@ -2595,6 +2601,9 @@ static int handle(struct seccomp_notif *req)
 			else
 				g[n++] = t->startsig[i];
 		t->nstart = 0;
+		for (int i = 0; i < n; i++)     /* landed while it computed: later than live */
+			if (g[i]->rip != req->data.instruction_pointer)
+				n_siglate++;
 		if (n && signals_then_again(req, -513, g, n) == 0)
 			return 1;
 	}
@@ -3141,6 +3150,70 @@ static void supervise(void)
 	}
 }
 
+/* Signals a thread got before its first syscall of the generation.  Three cases:
+ *   - it was pending when CRIU saved the process: the restore delivered it, the
+ *     thread sits in its handler with the signal blocked; nothing to do (the
+ *     first notification checks SigBlk);
+ *   - it arrived while CRIU had the process frozen, after the pending signals
+ *     were saved: live, the kernel delivered it the moment the process went on,
+ *     at the instruction where the checkpoint caught it.  The log has that
+ *     instruction and stack pointer; if they are the restored thread's, send it
+ *     now, while the thread is stopped: the copy runs the handler from the same
+ *     point (exact);
+ *   - anything else (it interrupted the call the thread was making, or arrived
+ *     later while it computed) is delivered at the thread's first syscall, as
+ *     before. */
+static void signals_at_checkpoint(void)
+{
+	char path[64];
+
+	for (int i = 0; i < nprocs; i++) {
+		snprintf(path, sizeof(path), "/proc/%d/task", procs[i].tgid);
+		DIR *td = opendir(path);
+		for (struct dirent *de; td && (de = readdir(td)); ) {
+			pid_t tid = de->d_name[0] != '.' ? atoi(de->d_name) : 0;
+			struct thr *t = tid ? thr_of(ns_tid_of(tid)) : NULL;
+			struct user_regs_struct regs;
+			int st, seized = 0, n = 0;
+
+			if (!t || !t->nstart)
+				continue;
+			if (t->start_tid != tid) {      /* (-T holds some threads already) */
+				if (ptrace(PTRACE_SEIZE, tid, 0, 0))
+					continue;
+				seized = 1;
+				if (ptrace(PTRACE_INTERRUPT, tid, 0, 0) || waitpid(tid, &st, __WALL) < 0 ||
+				    !WIFSTOPPED(st)) {
+					ptrace(PTRACE_DETACH, tid, 0, 0);
+					continue;
+				}
+			}
+			if (ptrace(PTRACE_GETREGS, tid, 0, &regs) == 0)
+				for (int k = 0; k < t->nstart; k++) {
+					const struct rec_signal *g = t->startsig[k];
+					if (g->rip == regs.rip && g->rsp == regs.rsp &&
+					    !sig_in_mask(tid, "SigBlk:", g->sig) &&
+					    syscall(SYS_tgkill, procs[i].tgid, tid, g->sig) == 0) {
+						n_sigdone++, n_sigckpt++;
+						if (opt_verbose)
+							printf("         %-5u signal %d (%s) delivered at the "
+							       "checkpoint, where it landed live\n",
+							       t->ns_tid, g->sig, strsignal(g->sig));
+					} else {
+						t->startsig[n++] = g;
+					}
+				}
+			else
+				n = t->nstart;
+			t->nstart = n;
+			if (seized)
+				ptrace(PTRACE_DETACH, tid, 0, 0);   /* back to its stopped state */
+		}
+		if (td)
+			closedir(td);
+	}
+}
+
 int main(int argc, char **argv)
 {
 	int gen = -1, c;
@@ -3299,6 +3372,7 @@ usage:
 			if (td)
 				closedir(td);
 		}
+	signals_at_checkpoint();
 	printf("seccomp listener attached to %d process(es):", nprocs);
 	for (int i = 0; i < nprocs; i++)
 		printf(" %d", procs[i].tgid);

@@ -37,6 +37,9 @@
 #                                      in sc_known.txt
 #   KICK=USR1+TERM                     send the target these signals after the
 #                                      checkpoint, four times (podman kill)
+#   CKPT_KICK=USR1                     send the target this signal from a CRIU action
+#                                      script at post-dump (tests/ckpt_kick.sh):
+#                                      it lands while the process is frozen
 #   SEARCH=40                          with -T: if the replay diverges, look for an
 #                                      order of threads that fits the whole
 #                                      recording (sysrr_search.sh, at most 40
@@ -60,6 +63,7 @@ ARGS=${ARGS:-}
 EXPECT=${EXPECT:-end}
 KEEP_GOING=${KEEP_GOING:-}
 KICK=${KICK:-}
+CKPT_KICK=${CKPT_KICK:-}
 SEARCH=${SEARCH:-}
 CKPT_OPTS=${CKPT_OPTS:-}
 END_OPT="-e kill"
@@ -95,6 +99,7 @@ RESTORE_CONF="if [ -e '$OUT/criu.conf.bak' ]; then sudo cp '$OUT/criu.conf.bak' 
 old_cs=$(cat $CS)
 r_old_cs=$(R "cat $CS")
 cleanup() {
+	[ ! -e /run/sysrr-kick ] || put_back_rec_conf     # interrupted during a CKPT_KICK checkpoint
 	echo "$old_cs" | sudo tee $CS >/dev/null
 	sudo podman rm -f -t 0 $SRC >/dev/null 2>&1 || true
 	R "echo $r_old_cs | sudo tee $CS >/dev/null; $RESTORE_CONF;
@@ -120,7 +125,24 @@ case " $SYSRR_OPTS " in
 *) sudo ../sysrr $SYSRR_OPTS -p "$PID" -o "$OUT/rec.log" 2>"$OUT/sysrr.err" & ;;
 esac
 sleep 2
-if ! sudo podman container checkpoint --leave-running $CKPT_OPTS -e "$OUT/ckpt.tar.gz" $SRC >/dev/null; then
+if [ -n "$CKPT_KICK" ]; then
+	# the hook goes into this machine's CRIU config for the checkpoint only
+	sudo rm -f "$OUT/rec-criu.conf.bak"
+	[ -e $CONF ] && sudo cp -p $CONF "$OUT/rec-criu.conf.bak"
+	sudo mkdir -p /etc/criu
+	{ [ -e "$OUT/rec-criu.conf.bak" ] && cat "$OUT/rec-criu.conf.bak"; echo "action-script $DIR/ckpt_kick.sh"; } |
+		sudo tee $CONF.new >/dev/null
+	sudo mv $CONF.new $CONF
+	echo "$PID $CKPT_KICK" | sudo tee /run/sysrr-kick >/dev/null
+	put_back_rec_conf() {
+		if [ -e "$OUT/rec-criu.conf.bak" ]; then sudo cp -p "$OUT/rec-criu.conf.bak" $CONF; else sudo rm -f $CONF; fi
+		sudo rm -f /run/sysrr-kick "$OUT/rec-criu.conf.bak"
+	}
+fi
+ckpt_rc=0
+sudo podman container checkpoint --leave-running $CKPT_OPTS -e "$OUT/ckpt.tar.gz" $SRC >/dev/null || ckpt_rc=$?
+[ -z "$CKPT_KICK" ] || put_back_rec_conf
+if [ $ckpt_rc != 0 ]; then
 	# "CRIU checkpointing failed -52" covers every cause: the reason is in dump.log,
 	# which goes away with the container, so show it now
 	D=$(sudo podman inspect -f '{{.StaticDir}}' $SRC 2>/dev/null)

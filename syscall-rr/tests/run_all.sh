@@ -30,6 +30,7 @@ TESTS=(
 "crash      |target crashes inside the recording               |TARGET=exit_target ARGS=crash test_replay.sh"
 "signal     |a timer signal 30 times a second, replayed        |TARGET=signal_target test_replay.sh"
 "signal-out |signals sent from outside (podman kill), replayed |TARGET=sigext_target KICK=USR1+TERM test_replay.sh"
+"sig-ckpt   |a signal lands while CRIU has it frozen: exact place|TARGET=sigckpt_target CKPT_KICK=USR1 test_replay.sh"
 "vdso-random|glibc getrandom makes no syscall: must end honestly |TARGET=rand_target EXPECT=honest test_replay.sh"
 "shell      |dash: depends on SIGCHLD timing, must never hang  |TARGET=sh_target.sh SYSRR_OPTS=-f REPLAY_OPTS=-T EXPECT=honest test_replay.sh"
 "python     |subprocess, C extensions loaded late, SQLite      |TARGET=py_target.py IMG=$PY SYSRR_OPTS=-f REPLAY_OPTS=-T test_replay.sh"

@@ -395,6 +395,21 @@ them from the REC_SIGNAL records; `-v` prints each delivery.
   thread's first syscall is therefore skipped when that signal is blocked at the
   thread's first notification (it is inside the handler). Found the hard way:
   one tick too many.
+* **A signal that lands while CRIU has the process frozen** (2026-11-20), after
+  the pending signals were saved: not in the image, and live the kernel delivered
+  it the moment the process went on, at the instruction the checkpoint caught.
+  `signals_at_checkpoint` (before the resume) compares the leading signal's
+  recorded rip/rsp with the restored thread's registers; equal and not blocked:
+  tgkill now, while the thread is stopped, so the copy runs the handler from the
+  same instruction. Before, it went out at the first syscall, after the thread had
+  computed on. Test `sig-ckpt` (tests/sigckpt_target.c; CKPT_KICK=USR1 sends the
+  signal from a CRIU action script at post-dump, tests/ckpt_kick.sh): the old
+  replayer diverges at the first write ("signals 0" instead of "signals 1:
+  74042352"), the new one is exact. Other leading signals still go out at the
+  first syscall: exact if they interrupted that call (recorded rip = the call's
+  return address), otherwise late (counted: "later than live").
+* Exact delivery in the middle of a computation would need a branch counter (as
+  rr does): this VM has no PMU ("no PMU driver, software events only").
 * Not replayed this way, on purpose: signals a recorded thread sent (matched to
   the latest kill-family record with that number; the kill runs for real),
   SIGCHLD (real children send it, at their own time: shell scripts still drift),
@@ -554,10 +569,12 @@ claude-dev, restore and replay on claude-test, crr with its own harness
 * Suite after the changes: 28 of 29, procs+thr's order search missed once. A/B
   on procs+thr, 5 rounds each: last commit 4 of 5, new build 5 of 5 (one via
   search), so the miss is the old search weakness, not the change.
-* crr ideas that may be worth a look later: delivering a recorded signal before
-  a syscall by rewriting the parked thread to -ERESTARTNOINTR under ptrace;
-  skipping, at the first notification, leading signal records already blocked
-  in SigBlk (restored inside the handler).
+* crr's two signal "ideas" (deliver before a syscall by putting -ERESTARTNOINTR
+  in rax under ptrace; skip a leading signal already blocked in SigBlk) turned
+  out to be in sysrr already (signals_then_again, first notification); the note
+  above that called them ideas was written from crr's docs without checking.
+  The one real difference: crr sends leading signals before resuming the copy.
+  Adopted where it is exact (see "Signals from the log", checkpoint signals).
 
 ## Replay limitations (tell the user when relevant)
 
