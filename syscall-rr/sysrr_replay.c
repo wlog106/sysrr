@@ -284,8 +284,9 @@ struct ent {                        /* one recorded syscall */
 	u64 key_start, key_end;     /* -T: the two ends of the stretch after it (-F flips between them) */
 	const struct ent *dep[4];   /* -T: records of other threads that caused its result */
 	unsigned char ndep, skipped;
-	const struct rec_signal *sig[4];   /* signals the thread got right after this call */
-	unsigned char nsig, sig_done, kill_used;
+	const struct rec_signal **sig;     /* signals the thread got right after this call */
+	unsigned nsig;
+	unsigned char sig_done, kill_used;
 };
 
 struct thr {                        /* one recorded thread */
@@ -304,8 +305,9 @@ struct thr {                        /* one recorded thread */
 	u64 hw_id;                  /* -T: an unrecorded futex wait, held instead of run (0 = none) */
 	int hw_lfd, hw_woken, hw_timed;
 	u32 hw_tgid;
-	const struct rec_signal *startsig[4];  /* signals it got before its first call */
+	const struct rec_signal **startsig;    /* signals it got before its first call */
 	int nstart;
+	int carry[64], ncarry;      /* the same standard signal again: sent at its next call */
 	u64 ckpt_sigs;              /* of those, sent at the checkpoint (signals_at_checkpoint) */
 	pid_t start_tid;            /* -T: held in a ptrace stop until its turn to start */
 	u64 start_key;              /* ... which is when it made its first syscall */
@@ -416,13 +418,34 @@ static void plan_signals(void)
 		    g->sig == SIGPIPE || (g->code > 0 && g->code != 0x80))
 			continue;
 		if (g->code == 0 /* SI_USER */ || g->code == -6 /* SI_TKILL */ || g->code == -1 /* SI_QUEUE */) {
-			/* sent by a recorded thread?  The latest matching kill before it. */
-			for (size_t j = 0; j < nents && ents[j].s->h.seq < g->h.seq; j++)
-				if (!ents[j].kill_used && ents[j].s->ret == 0 &&
-				    sig_of_kill(ents[j].s) == g->sig)
-					by = &ents[j];
+			/* sent by a recorded thread?  The latest matching kill before it,
+			 * aimed at this thread or its process.  A kill to a group or to
+			 * everyone (pid <= 0) reaches several receivers: it stays usable. */
+			u32 tgid = t->n ? t->q[0]->s->ns_tgid : 0;
+			int group = 0;
+			for (size_t j = 0; j < nents && ents[j].s->h.seq < g->h.seq; j++) {
+				const struct rec_syscall *k = ents[j].s;
+				int to;
+				if (ents[j].kill_used || k->ret != 0 || sig_of_kill(k) != g->sig)
+					continue;
+				switch (k->nr) {
+				case SYS_kill: case SYS_rt_sigqueueinfo:
+					to = (s32)k->args[0] <= 0 ? -1 : (u32)k->args[0] == tgid;
+					break;
+				case SYS_tkill:
+					to = (u32)k->args[0] == g->ns_tid;
+					break;
+				case SYS_tgkill: case SYS_rt_tgsigqueueinfo:
+					to = (u32)k->args[1] == g->ns_tid;
+					break;
+				default:                /* pidfd_send_signal: target not known */
+					to = 1;
+				}
+				if (to)
+					by = &ents[j], group = to < 0;
+			}
 			if (by) {
-				by->kill_used = 1;
+				by->kill_used = !group;
 				continue;
 			}
 		} else if (g->code != 0x80 /* SI_KERNEL */ && g->code != -2 /* SI_TIMER */) {
@@ -433,12 +456,12 @@ static void plan_signals(void)
 		n_sigplan++;
 		planned_sigs |= 1ULL << (g->sig - 1);
 		if (!at || (at->done && !is_restart_ret(at->s->ret))) {
-			if (t->nstart < 4)
-				t->startsig[t->nstart++] = g;
+			t->startsig = realloc(t->startsig, (t->nstart + 1) * sizeof(*t->startsig));
+			t->startsig[t->nstart++] = g;
 			continue;
 		}
-		if (at->nsig < 4)
-			at->sig[at->nsig++] = g;
+		at->sig = realloc(at->sig, (at->nsig + 1) * sizeof(*at->sig));
+		at->sig[at->nsig++] = g;
 		if (!is_restart_ret(at->s->ret) && at->s->ret != -EINTR &&
 		    g->ts > at->s->ts_exit + 20000)
 			n_sigloose++;
@@ -486,7 +509,7 @@ static void load(const char *path, int *gen)
 				sigs = realloc(sigs, (nsigs + 1) * sizeof(*sigs));
 				sigs[nsigs++] = (const void *)h;
 			}
-			if (h->type != REC_SYSCALL)
+			if (h->type != REC_SYSCALL || h->len < sizeof(struct rec_syscall))
 				continue;
 			const struct rec_syscall *s = (const void *)h;
 			if (pass == 0) {
@@ -513,7 +536,9 @@ static void load(const char *path, int *gen)
 		if (h->len < sizeof(*h) || p + h->len > end)
 			break;
 		p += h->len;
-		if (h->type != REC_DATA)
+		/* (a data record must hold the bytes it claims) */
+		if (h->type != REC_DATA || h->len < sizeof(struct rec_data) ||
+		    ((const struct rec_data *)h)->len > h->len - sizeof(struct rec_data))
 			continue;
 		struct ent *e = find_ent(h->seq);
 		if (!e)
@@ -1345,7 +1370,7 @@ static int check_inputs(struct thr *t, const struct ent *e, const struct seccomp
 			if (has_entry)
 				continue;
 		}
-		u64 addr;
+		u64 addr = 0;
 		unsigned char *now = malloc(d->len ? d->len : 1);
 		if (resolve(req->pid, req->data.nr, a, d, &addr) ||
 		    mem_read(req->pid, addr, now, d->len)) {
@@ -1394,6 +1419,38 @@ static int check_inputs(struct thr *t, const struct ent *e, const struct seccomp
 /* Write the recorded outputs into the replayed thread's memory.
  * Addresses are resolved first, then written, so a msghdr we overwrite
  * cannot redirect the following pieces. */
+/* A msghdr (56 bytes) or an mmsghdr array (64 bytes per message) holds the
+ * program's own pointers: msg_name, msg_iov and msg_control, at 0, 16 and 32.
+ * The recorded copy has the live process's values, which differ when the heap is
+ * laid out differently (several threads allocating).  Writing them back would
+ * make the next call of a reused msghdr use live addresses.  Only the kernel's
+ * fields (lengths, flags, msg_len) come from the log. */
+static unsigned header_period(long nr, const struct rec_data *d)
+{
+	if (d->idx == 0xfffe)
+		return 56;
+	if (nr == SYS_recvmmsg && d->arg == 1 && d->idx < 0xfff0)
+		return 64;
+	return 0;
+}
+
+static int write_keeping_pointers(pid_t pid, u64 addr, const struct rec_data *d, unsigned period)
+{
+	unsigned char *buf = malloc(d->len ? d->len : 1);
+	int r = -1;
+
+	if (buf && mem_read(pid, addr, buf, d->len) == 0) {
+		for (unsigned j = 0; j < d->len; j++) {
+			unsigned o = (d->offset + j) % period;
+			if (!(o < 8 || (o >= 16 && o < 24) || (o >= 32 && o < 40)))
+				buf[j] = d->data[j];
+		}
+		r = mem_write(pid, addr, buf, d->len);
+	}
+	free(buf);
+	return r;
+}
+
 static int inject_outputs(const struct ent *e, const struct seccomp_notif *req)
 {
 	const u64 *a = (const u64 *)req->data.args;
@@ -1404,9 +1461,11 @@ static int inject_outputs(const struct ent *e, const struct seccomp_notif *req)
 			return -1;
 	for (unsigned i = 0; i < e->nd; i++) {
 		const struct rec_data *d = e->d[i];
+		unsigned period = header_period(req->data.nr, d);
 		if (d->kind != D_OUT)
 			continue;
-		if (mem_write(req->pid, addrs[i], d->data, d->len)) {
+		if (period ? write_keeping_pointers(req->pid, addrs[i], d, period) :
+			     mem_write(req->pid, addrs[i], d->data, d->len)) {
 			printf("   cannot write %u bytes at %#llx (record #%llu)\n", d->len,
 			       (unsigned long long)addrs[i], (unsigned long long)e->s->h.seq);
 			return -1;
@@ -1581,6 +1640,37 @@ static int devnull(int acc, char *what, size_t wn, const char *why)
  * are root on the host: an escape would hand host files to the target).
  * Side effects of the original call (O_CREAT, O_TRUNC) are not repeated:
  * the replay only needs an fd, the file contents come from the log. */
+/* The path of directory dfd (the target's cwd or one of its directory fds,
+ * named by link under /proc) as seen from the target's root, checked by opening
+ * it from there and comparing device and inode.  -1 if that cannot be shown
+ * (another mount namespace's view, a deleted directory...). */
+static int dir_in_root(pid_t pid, const char *link, int dfd, char *out, size_t on)
+{
+	char rootp[4096], dirp[4096], rl[64];
+	struct stat x, y;
+	ssize_t n;
+
+	snprintf(rl, sizeof(rl), "/proc/%d/root", pid);
+	if ((n = readlink(rl, rootp, sizeof(rootp) - 1)) <= 0)
+		return -1;
+	rootp[n] = 0;
+	if ((n = readlink(link, dirp, sizeof(dirp) - 1)) <= 0)
+		return -1;
+	dirp[n] = 0;
+	size_t rn = strcmp(rootp, "/") ? strlen(rootp) : 0;
+	if (strncmp(dirp, rootp, rn) || (dirp[rn] != '/' && dirp[rn] != 0))
+		return -1;
+	snprintf(out, on, "%s", dirp[rn] ? dirp + rn : "/");
+	struct open_how h = { .flags = O_PATH | O_DIRECTORY | O_CLOEXEC,
+			      .resolve = RESOLVE_IN_ROOT | RESOLVE_NO_MAGICLINKS };
+	int v = syscall(SYS_openat2, troot, out, &h, sizeof(h));
+	int ok = v >= 0 && !fstat(v, &x) && !fstat(dfd, &y) && x.st_dev == y.st_dev &&
+		 x.st_ino == y.st_ino;
+	if (v >= 0)
+		close(v);
+	return ok ? 0 : -1;
+}
+
 static int open_like(pid_t pid, long nr, const u64 *a, char *what, size_t wn)
 {
 	char path[4096];
@@ -1616,6 +1706,22 @@ static int open_like(pid_t pid, long nr, const u64 *a, char *what, size_t wn)
 		base = syscall(SYS_pidfd_getfd, pidfd_for(pid), dirfd, 0);
 	if (base < 0)
 		return devnull(acc, what, wn, "no base directory");
+	/* A relative path resolved inside base (RESOLVE_IN_ROOT) could not climb
+	 * out with ".." and would take an absolute symlink as below base: resolve
+	 * it from the container's root instead, after the directory's own path. */
+	if (base != troot) {
+		char link[64], dir[4096], full[8192];
+		if (dirfd == AT_FDCWD)
+			snprintf(link, sizeof(link), "/proc/%d/cwd", pid);
+		else
+			snprintf(link, sizeof(link), "/proc/%d/fd/%d", pid, dirfd);
+		if (dir_in_root(pid, link, base, dir, sizeof(dir)) == 0 &&
+		    (size_t)snprintf(full, sizeof(full), "%s/%s", dir, path) < sizeof(path)) {
+			close(base);
+			base = troot;
+			memcpy(path, full, strlen(full) + 1);   /* (fits: checked above) */
+		}
+	}
 
 	/* O_NONBLOCK so a FIFO without a writer cannot block us */
 	struct open_how how = {
@@ -1816,6 +1922,10 @@ static int install_fds(const struct ent *e, const struct seccomp_notif *req, int
  * knowing the file, a real mmap of it still fails: REPLAY.md, limitations.) */
 static void install_scm_fds(const struct ent *e, const struct seccomp_notif *req)
 {
+	/* received with MSG_CMSG_CLOEXEC: the fds were close-on-exec live */
+	u64 fl = e->s->nr == SYS_recvmmsg ? e->s->args[3] : e->s->args[2];
+	int cloexec = !!(fl & MSG_CMSG_CLOEXEC);
+
 	for (unsigned i = 0; i < e->nd; i++) {
 		const struct rec_data *d = e->d[i];
 		size_t pos = 0;
@@ -1832,7 +1942,7 @@ static void install_scm_fds(const struct ent *e, const struct seccomp_notif *req
 				for (size_t k = 0; k < nfd; k++) {
 					int fd, src = open("/dev/null", O_RDWR | O_CLOEXEC);
 					memcpy(&fd, d->data + pos + sizeof(h) + k * sizeof(int), sizeof(int));
-					if (src >= 0 && addfd(req->id, src, fd, 0, 0) == 0)
+					if (src >= 0 && addfd(req->id, src, fd, cloexec, 0) == 0)
 						n_fds++;
 					if (src >= 0)
 						close(src);
@@ -1942,9 +2052,34 @@ static int sends_sigpipe(const struct seccomp_notif *req)
 
 /* restart: leave the call in place (rax says how the kernel restarts it after
  * the handler); otherwise the call is over and returned ret. */
-static int return_with_signals(const struct seccomp_notif *req, s64 ret, int restart,
-			       const int *sig, int n)
+/* A standard signal (1..31) is pending once at most: sent twice in a row, the
+ * kernel keeps one and the handler runs once.  Keep the first of each number in
+ * the batch and carry the others to the thread's next call, where they go out
+ * after the handler has run (inside it the signal is blocked, so it waits). */
+static int carry_dups(pid_t tid, int *sig, int n)
 {
+	struct thr *t = thr_of(ns_tid_of(tid));
+	u32 seen = 0;
+	int k = 0;
+
+	for (int i = 0; i < n; i++) {
+		int s = sig[i];
+		if (s > 0 && s < 32 && (seen >> s & 1)) {
+			if (t && t->ncarry < 64)
+				t->carry[t->ncarry++] = s;
+			continue;
+		}
+		if (s > 0 && s < 32)
+			seen |= 1u << s;
+		sig[k++] = s;
+	}
+	return k;
+}
+
+static int return_with_signals(const struct seccomp_notif *req, s64 ret, int restart,
+			       const int *sig_in, int n)
+{
+	int sig[n + 1];
 	pid_t tid = req->pid;
 	struct user_regs_struct r;
 	int st;
@@ -1969,6 +2104,8 @@ static int return_with_signals(const struct seccomp_notif *req, s64 ret, int res
 	if (!restart)
 		r.orig_rax = -1;        /* not a syscall any more: nothing to restart */
 	ptrace(PTRACE_SETREGS, tid, 0, &r);
+	memcpy(sig, sig_in, n * sizeof(*sig));
+	n = carry_dups(tid, sig, n);
 	for (int i = 0; i < n; i++)
 		syscall(SYS_tgkill, tgid_of(tid), tid, sig[i]);
 	ptrace(PTRACE_DETACH, tid, 0, 0);
@@ -1982,7 +2119,7 @@ static int return_with_signals(const struct seccomp_notif *req, s64 ret, int res
 static int signals_then_again(const struct seccomp_notif *req, s64 how,
 			      const struct rec_signal *const *g, int n)
 {
-	int nums[4];
+	int nums[n + 1];
 
 	for (int i = 0; i < n; i++)
 		nums[i] = g[i]->sig;
@@ -2613,11 +2750,20 @@ static int handle(struct seccomp_notif *req)
 		return 1;
 	}
 
+	if (t->ncarry) {                        /* the same signal again (carry_dups) */
+		int c[64], n = t->ncarry;
+		memcpy(c, t->carry, n * sizeof(*c));
+		t->ncarry = 0;
+		if (return_with_signals(req, -513, 1, c, n) == 0)
+			return 1;
+		memcpy(t->carry, c, n * sizeof(*c));    /* not delivered: next call */
+		t->ncarry = n;
+	}
 	if (t->nstart) {                        /* signals from before its first call */
 		/* One that was pending at the checkpoint is in the image: the restore
 		 * delivered it, and the thread woke up inside its handler (where the
 		 * signal is blocked).  Only the others are ours to deliver. */
-		const struct rec_signal *g[4];
+		const struct rec_signal *g[t->nstart + 1];
 		int n = 0;
 		/* (A signal sent at the checkpoint has its handler running now, which
 		 * blocks its own and sa_mask's signals: that says nothing about the
@@ -2628,13 +2774,18 @@ static int handle(struct seccomp_notif *req)
 				n_sigdone++;
 			else
 				g[n++] = t->startsig[i];
-		t->nstart = 0;
 		for (int i = 0; i < n; i++)     /* landed while it computed: later than live */
 			late += g[i]->rip != req->data.instruction_pointer;
 		if (n && signals_then_again(req, -513, g, n) == 0) {
+			t->nstart = 0;
 			n_siglate += late;
 			return 1;
 		}
+		/* not delivered (the thread was not where ptrace expected it): keep
+		 * them for its next call */
+		for (int i = 0; i < n; i++)
+			t->startsig[i] = g[i];
+		t->nstart = n;
 	}
 	/* a recorded signal interrupted this very call: the same here */
 	for (size_t j = t->pos; j < t->n && t->q[j]->done; j++) {
@@ -2642,9 +2793,10 @@ static int handle(struct seccomp_notif *req)
 		if (!k->nsig || k->sig_done || !is_restart_ret(k->s->ret) ||
 		    (long)k->s->nr != req->data.nr)
 			continue;
-		k->sig_done = 1;
-		if (signals_then_again(req, k->s->ret, k->sig, k->nsig) == 0)
+		if (signals_then_again(req, k->s->ret, k->sig, k->nsig) == 0) {
+			k->sig_done = 1;
 			return 1;
+		}
 	}
 	e = next_ent(t);
 	/* The live process re-ran a signal-interrupted sleep via restart_syscall;
@@ -2656,8 +2808,8 @@ static int handle(struct seccomp_notif *req)
 	}
 	while (e && is_timing_only(e->s->nr, e->s->args[0]) && !same_call(e, req)) {
 		if (e->nsig && !e->sig_done) {
-			e->sig_done = 1;
 			if (signals_then_again(req, -513, e->sig, e->nsig) == 0) {
+				e->sig_done = 1;
 				consume(e);
 				n_slack++;
 				return 1;
@@ -2863,23 +3015,26 @@ static int handle(struct seccomp_notif *req)
 		return 1;                       /* interrupted: it will come again */
 	/* a write to a pipe or socket nobody reads: the kernel sends SIGPIPE too */
 	int piped = fr > 0 && !cont && e->s->ret == -EPIPE && sends_sigpipe(req);
-	int nums[5], nn = 0;
+	int nums[e->nsig + 2], nn = 0;
 	if (piped)
 		nums[nn++] = SIGPIPE;
 	for (int i = 0; i < e->nsig && !e->sig_done; i++)       /* recorded: timer, outside */
 		nums[nn++] = e->sig[i]->sig;
-	e->sig_done = 1;
 	if (nn && fr > 0 && !cont && return_with_signals(req, e->s->ret, 0, nums, nn) == 0) {
 		;
 	} else {
 		if (cont && req->data.nr == SYS_futex)
 			note_wake(req);
+		/* the answer did not arrive (a real signal took the thread out of its
+		 * wait): the call comes again, and its signals go out then */
 		if (fr > 0 && respond(req->id, cont, e->s->ret))
 			return 1;
 		/* second best (a call that ran for real, or made fds): just after it */
-		for (int i = 0; i < nn; i++)
+		int nsend = carry_dups(req->pid, nums, nn);
+		for (int i = 0; i < nsend; i++)
 			syscall(SYS_tgkill, tgid_of(req->pid), req->pid, nums[i]);
 	}
+	e->sig_done = 1;
 	n_sig += piped;
 	n_sigdone += nn - piped;
 	if (opt_verbose)
@@ -3220,7 +3375,12 @@ static void signals_at_checkpoint(void)
 			if (ptrace(PTRACE_GETREGS, tid, 0, &regs) == 0)
 				for (int k = 0; k < t->nstart; k++) {
 					const struct rec_signal *g = t->startsig[k];
-					if (g->rip == regs.rip && g->rsp == regs.rsp && landed_in_freeze(g) &&
+					if (g->handler && regs.rip == g->handler) {
+						/* the restore delivered it already: the thread
+						 * stands at its handler's first instruction (with
+						 * SA_NODEFER, SigBlk would not show it) */
+						n_sigdone++;
+					} else if (g->rip == regs.rip && g->rsp == regs.rsp && landed_in_freeze(g) &&
 					    !sig_in_mask(tid, "SigBlk:", g->sig) &&
 					    syscall(SYS_tgkill, procs[i].tgid, tid, g->sig) == 0) {
 						n_sigdone++, n_sigckpt++;

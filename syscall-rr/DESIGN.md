@@ -206,7 +206,8 @@ So the log contains every input the program used.
   side the restored vDSO will have to be redirected either way.
 * Not captured yet: `ioctl` beyond FIONREAD/TCGETS/TIOCGWINSZ, `recvmmsg`,
   `io_uring` (completions bypass syscalls), shared memory written by other
-  processes, signals (delivery points are not recorded), `rdtsc`.
+  processes, `rdtsc`. (Signals are recorded: number, code, and where the thread
+  was, `rip`/`rsp`; see REPLAY.md "Signals from the log".)
 * Multi-threaded targets: records are per thread (`ns_tid`) and globally
   ordered by `seq`. Reproducing the interleaving across threads is a replay
   problem.
@@ -539,8 +540,10 @@ write lsm profile -2"); the test starts a throwaway container first.
 * Installed fds are stand-ins: sockets are unconnected, a memfd is empty,
   a file missing on the replay machine becomes `/dev/null`. Fine during the
   replay; with `-e live` the process continues with those stand-ins.
-* Not replayed: signals, io_uring, shared memory written by other processes,
-  rdtsc, vDSO time (use the acpi_pm workaround on the replay machine too).
+* Not replayed: io_uring, shared memory written by other processes, rdtsc,
+  vDSO time (use the acpi_pm workaround on the replay machine too). Signals
+  from timers and from outside are replayed from the log (REPLAY.md, "Signals
+  from the log"); one that arrived mid-computation comes back early.
 * The filter cannot be removed: the supervisor must outlive the target, CRIU
   cannot checkpoint it again, and `no_new_privs` stays set.
 * Threads created during replay may get other pids than recorded; they are

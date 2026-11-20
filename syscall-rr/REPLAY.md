@@ -644,7 +644,23 @@ Fixed the same evening (scripts):
   still failed `cmp`; the files were gone, likely two near-simultaneous writes
   whose pipe order differs from their record order.
 
-Open (pre-existing, found by the review, not fixed yet; in order of weight):
+The nine below were fixed the next session (2026-11-20, after the usage reset):
+1 header_period/write_keeping_pointers (msghdr every 56 bytes, the recvmmsg array
+every 64: the bytes at 0, 16, 32 keep the program's values); 2 dynamic sig/startsig
+arrays, carry_dups keeps one of each standard signal per batch and carries the
+rest to the thread's next call (t->carry); 3 kill/tkill/tgkill matched to the
+receiving process/thread, group kills stay usable; 4 sig_done/nstart set only
+after delivery; 5 dir_in_root (the directory's path from the container root,
+verified by dev/ino, else the old behaviour); 6 load() checks record lengths;
+7 addr initialised; 8 MSG_CMSG_CLOEXEC honoured; 9 signals_at_checkpoint skips a
+leading signal when the restored thread stands at that signal's handler.
+Suite after these fixes: 28 of 30 (python: checkpoint failed, state D, the known
+recording-side flake; httpd: order search missed), then httpd 2 of 2 and python
+1 of 2 (again state D at the checkpoint; its replays passed every time). The
+state-D checkpoint failure on the python test is now the most frequent flake: a
+retry would need the test to replay generation 2 (a failed dump still bumps the
+generation when CRIU detaches).
+As found (pre-existing, in order of weight):
 1. recvmsg/recvmmsg: the recorded msghdr (and mmsghdr array) is written back
    whole, including the live process's msg_name/msg_iov/msg_control pointers;
    when the heap differs (counted as n_ptrdiff), the next call of a reused msghdr
