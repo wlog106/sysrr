@@ -49,7 +49,7 @@ r_old_cs=$(R "cat $CS")
 cleanup() {
 	echo "$old_cs" | sudo tee $CS >/dev/null
 	sudo podman rm -f -t 0 $SRC >/dev/null 2>&1
-	R "echo $r_old_cs | sudo tee $CS >/dev/null; sudo rm -f $CONF; sudo pkill -x sysrr_replay; sudo pkill -x sysrr;
+	R "echo $r_old_cs | sudo tee $CS >/dev/null; sudo pkill -x sysrr_replay; sudo pkill -x sysrr;
 	   sudo podman rm -f -t 0 $DST >/dev/null 2>&1; true"
 }
 trap cleanup EXIT
@@ -92,14 +92,14 @@ echo "--- live run: exit code $live_code"
 tail -3 "$OUT/live_signals.txt"
 
 if [ -n "$REMOTE" ]; then
-	tar -C .. -cf - sysrr sysrr_replay sysrr_dump tests | $SSH "$REMOTE" "tar -C '$DIR/..' -xf -"
+	tar -C .. -cf - sysrr sysrr_replay sysrr_dump sysrr_restore.sh tests | $SSH "$REMOTE" "tar -C '$DIR/..' -xf -"
 	put "$OUT/ckpt.tar.gz"; put "$OUT/rec.log"
 	$SSH "$REMOTE" "sudo podman image exists $IMG" || sudo podman save $IMG | $SSH "$REMOTE" "sudo podman load -q" >/dev/null
 fi
 R "sudo podman run --rm --image-volume ignore $IMG true" >/dev/null 2>&1
-if ! PID2=$(R "echo leave-stopped | sudo tee $CONF >/dev/null;
-	sudo podman container restore --import '$OUT/ckpt.tar.gz' --name $DST >/dev/null 2>'$OUT/restore.txt'; rc=\$?;
-	sudo rm -f $CONF; [ \$rc = 0 ] && sudo podman inspect -f '{{.State.Pid}}' $DST"); then
+# restored left stopped by sysrr_restore.sh, which puts the CRIU config back as it was
+if ! PID2=$(R "sudo ../sysrr_restore.sh '$OUT/ckpt.tar.gz' $DST >'$OUT/restore.txt' 2>&1 &&
+	sed -n 's/^restored .* pid \([0-9]*\) .*/\1/p' '$OUT/restore.txt'") || [ -z "$PID2" ]; then
 	echo "VERDICT setup: restore failed: $(R "head -c 150 '$OUT/restore.txt'")"
 	exit 1
 fi

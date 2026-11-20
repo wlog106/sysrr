@@ -37,17 +37,18 @@ done
 shift $((OPTIND - 1))
 LOG=${1:?usage: sysrr_search.sh -i ckpt.tar.gz [-g N] [-n TRIES] rec.log}
 [ -n "$CKPT" ] || { echo "sysrr_search: -i ckpt.tar.gz is required" >&2; exit 2; }
+# (paths are taken before the cd below)
+CKPT=$(realpath -e -- "$CKPT") && LOG=$(realpath -e -- "$LOG") || exit 2
 cd "$(dirname "$0")"
-NAME=rrsearch CONF=/etc/criu/default.conf
+NAME=rrsearch
 WORK=$(mktemp -d /var/tmp/sysrr-search.XXXXXX)
-[ -e $CONF ] && sudo cp $CONF "$WORK/criu.conf.bak"
 CS=/sys/devices/system/clocksource/clocksource0/current_clocksource
 old_cs=$(cat $CS)
 echo acpi_pm | sudo tee $CS >/dev/null
 cleanup() {
-	if [ -e "$WORK/criu.conf.bak" ]; then sudo cp "$WORK/criu.conf.bak" $CONF; else sudo rm -f $CONF; fi
 	[ -n "$KEEP" ] || sudo podman rm -f -t 0 "$NAME" >/dev/null 2>&1
 	echo "$old_cs" | sudo tee $CS >/dev/null
+	rm -rf "$WORK"
 }
 trap cleanup EXIT
 
@@ -55,18 +56,14 @@ trap cleanup EXIT
 attempt() {
 	local flips=$1 end=${2:-kill} out="$WORK/try.txt" pid name
 	sudo podman rm -f -t 0 "$NAME" >/dev/null 2>&1
-	sudo mkdir -p /etc/criu
-	echo leave-stopped | sudo tee $CONF >/dev/null
-	name="--name $NAME"
+	name=$NAME
 	case "$COPTS" in *tcp-established*) name= ;; esac
-	if ! sudo podman container restore $COPTS --import "$CKPT" $name >"$WORK/restore.txt" 2>&1; then
-		sudo rm -f $CONF
+	# restored left stopped by sysrr_restore.sh; its last line names the copy
+	if ! sudo ./sysrr_restore.sh ${COPTS:+-c "$COPTS"} "$CKPT" $name >"$WORK/restore.txt" 2>&1; then
 		echo "restore failed: $(tail -1 "$WORK/restore.txt")" >&2
 		return 1
 	fi
-	sudo rm -f $CONF
-	[ -n "$name" ] || NAME=$(sudo podman ps --latest --format '{{.Names}}')
-	pid=$(sudo podman inspect -f '{{.State.Pid}}' "$NAME")
+	read -r NAME pid < <(sed -n 's/^restored \([^ ]*\) pid \([0-9]*\) .*/\1 \2/p' "$WORK/restore.txt")
 	timeout 120 sudo ./sysrr_replay -T $ROPTS ${flips:+-F $flips} -p "$pid" -g "$GEN" -e "$end" \
 		"$LOG" >"$out" 2>&1 &
 	if [ "$end" = stop ]; then

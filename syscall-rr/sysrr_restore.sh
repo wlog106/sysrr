@@ -45,17 +45,28 @@ else
 fi
 
 CONF=/etc/criu/default.conf
-BAK=$(mktemp /tmp/sysrr-criu-conf.XXXXXX)
-had_conf=
-if [ -e $CONF ]; then cp -p $CONF "$BAK"; had_conf=1; fi
+# The original is kept at a fixed place, so a run that was killed half way is
+# repaired by the next one (a backup that vanished with a temporary file would
+# leave leave-stopped in the config for good).  One restore at a time.
+BAK=/run/sysrr-restore.criu.conf
+NONE=/run/sysrr-restore.no-conf
+exec 9>/run/sysrr-restore.lock
+flock 9
 put_back() {
-	if [ -n "$had_conf" ]; then cp -p "$BAK" $CONF; else rm -f $CONF; fi
-	rm -f "$BAK"
+	if [ -e $BAK ]; then cp -p $BAK $CONF; elif [ -e $NONE ]; then rm -f $CONF; fi
+	rm -f $BAK $NONE
 }
+[ -e $BAK ] || [ -e $NONE ] && { echo "sysrr_restore: repairing $CONF after an interrupted run" >&2; put_back; }
+if [ -e $CONF ]; then cp -p $CONF $BAK; else touch $NONE; fi
 trap put_back EXIT
 trap 'exit 130' INT TERM
 mkdir -p /etc/criu
-{ [ -z "$had_conf" ] || grep -vx 'leave-stopped' "$BAK"; echo leave-stopped; } >$CONF.new
+# Other tools' action scripts stay out of this restore: a hook that freezes or
+# attaches to the restored task (crr installs one) would fight the replay.
+if [ -e $BAK ] && grep -q '^[[:space:]]*action-script' $BAK; then
+	echo "sysrr_restore: action-script lines of $CONF left out for this restore" >&2
+fi
+{ [ ! -e $BAK ] || grep -vxE 'leave-stopped|[[:space:]]*action-script.*' $BAK; echo leave-stopped; } >$CONF.new
 mv $CONF.new $CONF
 
 ERR=$(mktemp /tmp/sysrr-restore.XXXXXX)

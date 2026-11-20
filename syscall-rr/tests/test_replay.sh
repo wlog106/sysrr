@@ -131,6 +131,7 @@ case " $SYSRR_OPTS " in
 *" -f "*) sudo ../sysrr ${SYSRR_OPTS/-f/} -C $SRC -o "$OUT/rec.log" 2>"$OUT/sysrr.err" & ;;
 *) sudo ../sysrr $SYSRR_OPTS -p "$PID" -o "$OUT/rec.log" 2>"$OUT/sysrr.err" & ;;
 esac
+SYSRR_PID=$!                    # (sudo; it passes SIGINT on to our sysrr, and only ours)
 sleep 2
 if [ -n "$CKPT_KICK" ]; then
 	# the hook goes into this machine's CRIU config for the checkpoint only;
@@ -154,7 +155,7 @@ if [ $ckpt_rc != 0 ]; then
 	echo "FAIL: checkpoint failed; CRIU says:"
 	sudo grep -E 'Error|Warn' "$D/dump.log" 2>/dev/null | tail -8
 	sudo cp "$D/dump.log" "$OUT/dump.log" 2>/dev/null && sudo chmod a+r "$OUT/dump.log"
-	sudo pkill -INT -x sysrr || true
+	sudo kill -INT $SYSRR_PID 2>/dev/null || true
 	exit 1
 fi
 if [ -n "$KICK" ]; then         # signals from outside, while generation 1 is recorded
@@ -166,7 +167,7 @@ sleep 2
 sudo podman pause $SRC >/dev/null 2>&1 || true   # freeze A: its log now ends where the recording ends
                                             # (exit_target has already ended by itself)
 sleep 0.5
-sudo pkill -INT -x sysrr || true             # (it stops by itself if the target ended)
+sudo kill -INT $SYSRR_PID 2>/dev/null || true   # (it stops by itself if the target ended)
 wait || true
 sudo podman logs $SRC >"$OUT/live_all.txt"
 sudo podman rm -f -t 0 $SRC >/dev/null
@@ -200,7 +201,7 @@ restore_stopped() {
 }
 
 echo "--- restore on $WHERE, left stopped"
-PID2=$(restore_stopped $DST)
+PID2=$(restore_stopped $DST) && [ -n "$PID2" ] || { echo "FAIL: restore failed (see above)"; exit 1; }
 echo "restored pid $PID2: $(R "grep State /proc/$PID2/status")"
 
 echo "--- replay on $WHERE"
@@ -220,7 +221,7 @@ if [ -n "$SEARCH" ] && [ "$SEARCH" != 0 ] && [ $rc = 1 ] && grep -q DIVERGENCE "
 	[ "$FLIPS" != none ] || FLIPS=
 	if grep -q '^FOUND' "$OUT/search.txt"; then
 		echo "--- replay again${FLIPS:+ with -F $FLIPS}"
-		PID2=$(restore_stopped $DST)
+		PID2=$(restore_stopped $DST) && [ -n "$PID2" ] || { echo "FAIL: restore failed (see above)"; exit 1; }
 		rc=0
 		R "timeout 60 sudo ../sysrr_replay $REPLAY_OPTS ${FLIPS:+-F $FLIPS} -p $PID2 -g 1 $END_OPT \
 		   -w '$OUT/replay_out.txt' '$OUT/rec.log'" >"$OUT/replay.txt" || rc=$?
@@ -275,7 +276,11 @@ else
 	grep -q 'end of the recording reached' "$OUT/replay.txt" || { echo "FAIL: end not reached"; fail=1; }
 fi
 [ "$n" -gt 0 ] || { echo "FAIL: no output"; fail=1; }
-cmp -s "$OUT/live_tail.txt" "$OUT/replay_out.txt" || { echo "FAIL: output differs"; fail=1; }
+if ! cmp -s "$OUT/live_tail.txt" "$OUT/replay_out.txt"; then
+	echo "FAIL: output differs (- live, + replay):"
+	diff "$OUT/live_tail.txt" "$OUT/replay_out.txt" | head -12 || true
+	fail=1
+fi
 [ $fail = 0 ] && echo "PASS: $n lines reproduced on $WHERE, no divergence${FLIPS:+ (order found by search: -F $FLIPS)}"
 R "sudo podman rm -f -t 0 $DST >/dev/null"
 
@@ -295,7 +300,7 @@ fd_target)
 *)
 	exit $fail
 esac
-PID3=$(restore_stopped $BAD)
+PID3=$(restore_stopped $BAD) && [ -n "$PID3" ] || { echo "FAIL: restore failed (see above)"; exit 1; }
 if [ $TARGET = fd_target ] && R "sudo test -e /proc/$PID3/fd/3"; then
 	# the checkpoint fell between open() and close(): fd 3 was restored for
 	# real, so even without fd installation the mmap works

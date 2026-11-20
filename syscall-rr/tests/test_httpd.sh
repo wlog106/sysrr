@@ -106,7 +106,7 @@ sudo podman rm -f -t 0 $SRC >/dev/null
 
 if [ -n "$REMOTE" ]; then
 	echo "--- copy to $REMOTE: sysrr_replay, client, checkpoint, log"
-	tar -C .. -cf - sysrr_replay sysrr_search.sh | $SSH "$REMOTE" "tar -C '$DIR/..' -xf -"
+	tar -C .. -cf - sysrr_replay sysrr_search.sh sysrr_restore.sh | $SSH "$REMOTE" "tar -C '$DIR/..' -xf -"
 	put "$OUT/ckpt.tar.gz"
 	put "$OUT/rec.log"
 	if ! $SSH "$REMOTE" "sudo podman image exists $IMG"; then
