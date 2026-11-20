@@ -133,7 +133,7 @@ td small { color: var(--muted); }
   <h2>Getting started</h2>
   <p>A process can only install a seccomp filter on itself, and it must not run any syscall before that. So we make the frozen process install it, as if its own code had asked:</p>
   <ol class="flow">
-    <li class="t"><div><span class="who">Restore, frozen</span>A line in <code>/etc/criu/default.conf</code> (<code>leave-stopped</code>) makes CRIU hand over the process stopped. The file is removed right after, or later checkpoints would freeze too.</div></li>
+    <li class="t"><div><span class="who">Restore, frozen</span><code>sysrr_restore.sh</code> adds a line to <code>/etc/criu/default.conf</code> (<code>leave-stopped</code>), which makes CRIU hand over the process stopped. It puts the file back right after, or later checkpoints would freeze too.</div></li>
     <li class="u"><div><span class="who">Take control for a moment</span>ptrace attaches, saves the registers, and writes a tiny <code>syscall; int3</code> at the current instruction.</div></li>
     <li class="u"><div><span class="who">Make it run our calls</span>Set the registers and let it run: <code>mmap</code> a page, <code>prctl(NO_NEW_PRIVS)</code>, <code>seccomp(...)</code>. That returns a listener fd, and we copy it to ourselves with <code>pidfd_getfd</code>.</div></li>
     <li class="u"><div><span class="who">Clean up and let go</span>Unmap the page, close its copy of the fd, restore the code and registers, detach, send <code>SIGCONT</code>.</div></li>
@@ -287,6 +287,7 @@ td small { color: var(--muted); }
       <tr><td>The signal interrupted a syscall, such as a sleep or a read that was waiting</td><td>When the copy makes that call, replay interrupts it the same way and sends the signal. The kernel then restarts the call or fails it with <code>EINTR</code>, as it did live.</td><td>Exact</td></tr>
       <tr><td>The signal came right after a syscall returned</td><td>Sent together with that call's answer.</td><td>Exact</td></tr>
       <tr><td>The signal came while the thread was computing</td><td>Sent with the answer of the thread's previous syscall.</td><td>Early, by the length of that computation. Replay counts these and says so.</td></tr>
+      <tr><td>The signal landed while the checkpoint was being taken</td><td>Sent before the copy starts, so the handler runs from the same instruction as live. (The log has the instruction; replay checks it is where the copy stands.)</td><td>Exact</td></tr>
     </tbody>
   </table></div>
   <p>Three details make it work:</p>
@@ -315,11 +316,12 @@ td small { color: var(--muted); }
 
 <section id="tests">
   <h2>The test suite</h2>
-  <p><code>tests/run_all.sh</code> runs each target through the same cycle: record, checkpoint, restore, replay, compare with the live run. It has 28 tests. The last full run, on 2026-11-13, passed all 28. The ten that use threads or several processes also passed three rounds each; httpd needed an order search every time, and the pool with all workers woken at once in two of three. Across machines, the same ten passed 18 of 20 rounds: twice the search found no order that fits.</p>
+  <p><code>tests/run_all.sh</code> runs each target through the same cycle: record, checkpoint, restore, replay, compare with the live run. It has 30 tests. The last full run, on 2026-11-20 with the replay on a second machine, passed all 30. On 2026-11-13, the ten that use threads or several processes also passed three rounds each; httpd needed an order search every time, and the pool with all workers woken at once in two of three. Across machines, the same ten passed 18 of 20 rounds: twice the search found no order that fits.</p>
   <div class="tablewrap"><table>
     <thead><tr><th>Group</th><th>Tests</th><th>Passes when</th></tr></thead>
     <tbody>
-      <tr><td>Small programs</td><td><code>basic</code>, <code>threads</code>, <code>fds</code>, <code>syscalls</code>, <code>fork</code>, <code>thread-new</code>, <code>exit</code>, <code>crash</code>, <code>net</code>, <code>files</code>, <code>reexec</code>, <code>self-signal</code>, <code>signal</code>, <code>signal-out</code>, <code>procs+thr</code></td><td>The replay prints the same lines as the live run.</td></tr>
+      <tr><td>Small programs</td><td><code>basic</code>, <code>threads</code>, <code>fds</code>, <code>syscalls</code>, <code>fork</code>, <code>thread-new</code>, <code>exit</code>, <code>crash</code>, <code>net</code>, <code>files</code>, <code>reexec</code>, <code>self-signal</code>, <code>signal</code>, <code>signal-out</code>, <code>sig-ckpt</code>, <code>procs+thr</code></td><td>The replay prints the same lines as the live run.</td></tr>
+      <tr><td>Recorder</td><td><code>tracer</code></td><td><code>strace</code> on the target doesn't start a new generation; only CRIU does.</td></tr>
       <tr><td>Threads sharing a queue</td><td><code>pool</code>, <code>pool-burst</code></td><td>The replay matches, if need be with an order found by <code>sysrr_search.sh</code>.</td></tr>
       <tr><td>Languages</td><td><code>python</code>, <code>asyncio</code>, <code>perl</code></td><td>The same.</td></tr>
       <tr><td>Servers</td><td><code>redis</code>, <code>nginx</code>, <code>memcached</code>, <code>httpd</code></td><td>The restored server ends with the same data or logs as the live one.</td></tr>
@@ -461,13 +463,12 @@ td small { color: var(--muted); }
 <section id="use">
   <h2>Commands</h2>
   <pre><span class="dim"># restore, frozen</span>
-echo leave-stopped | sudo tee /etc/criu/default.conf
-sudo podman container restore --import ckpt.tar.gz --name NEW
-sudo rm /etc/criu/default.conf
+sudo ./sysrr_restore.sh ckpt.tar.gz NEW
 
 <span class="dim"># replay</span>
-sudo ./sysrr_replay -p $(sudo podman inspect -f '{{.State.Pid}}' NEW) -g 1 rec.log
+sudo ./sysrr_replay -C NEW -g 1 rec.log
 
+  -C NAME    the restored container (or -p PID: its first process)
   -g N       generation to replay
   -S         syscalls start in recorded order
   -T         one thread runs at a time, in recorded order

@@ -232,7 +232,7 @@ read(3, buf, 40000)     → DATA(16 KiB)  DATA(16 KiB)  DATA(7 KiB)  SYSCALL</pr
 
       <rect x="330" y="104" width="200" height="44" rx="4" class="box-m"/>
       <text x="430" y="122" text-anchor="middle" class="t-name">targets</text>
-      <text x="430" y="139" text-anchor="middle" class="t-sub">HASH · tgids (only with -f)</text>
+      <text x="430" y="139" text-anchor="middle" class="t-sub">HASH · tgids (-f, -C only)</text>
 
       <rect x="330" y="168" width="200" height="44" rx="4" class="box-m"/>
       <text x="430" y="186" text-anchor="middle" class="t-name">.bss</text>
@@ -335,7 +335,7 @@ read(3, buf, 40000)     → DATA(16 KiB)  DATA(16 KiB)  DATA(7 KiB)  SYSCALL</pr
       <tr><td><code>events</code></td><td>Finished records, on their way to the file</td><td>A ring buffer: one queue for all CPUs, in order.</td></tr>
       <tr><td><code>tstate</code></td><td>Each thread's notes between entry and exit</td><td>Task storage moves with the thread if it changes CPU.</td></tr>
       <tr><td><code>scratch</code></td><td>One chunk being assembled</td><td>16 KiB doesn't fit the 512-byte BPF stack. Each CPU has its own, and one run finishes before the next starts.</td></tr>
-      <tr><td><code>targets</code></td><td>Processes to record (with <code>-f</code>)</td><td>A hash set.</td></tr>
+      <tr><td><code>targets</code></td><td>Processes to record (with <code>-f</code> or <code>-C</code>)</td><td>A hash set. A process is taken out when it ends, so the 4,096 places never run out.</td></tr>
       <tr><td><code>lost</code></td><td>Count of records that didn't fit</td><td>Per-CPU counters need no locks.</td></tr>
       <tr><td><code>.rodata</code>, <code>.bss</code></td><td>Settings; and <code>seq_ctr</code>, <code>gen</code>, <code>seized_cnt</code></td><td>BPF global variables are maps too.</td></tr>
     </tbody>
@@ -541,7 +541,7 @@ read(3, buf, 40000)     → DATA(16 KiB)  DATA(16 KiB)  DATA(7 KiB)  SYSCALL</pr
 
 <section id="threads">
   <h2>Threads and child processes</h2>
-  <p>Each record stores the thread's id inside the container (<code>ns_tid</code>). CRIU restores those ids, so replay can match each record to the right thread. Use <code>sysrr -f</code> if the target has child processes, or forks new ones.</p>
+  <p>Each record stores the thread's id inside the container (<code>ns_tid</code>). CRIU restores those ids, so replay can match each record to the right thread. Use <code>sysrr -C NAME</code> to record a whole container, or <code>sysrr -f -p PID</code> for a process and the ones it starts.</p>
   <p>A few records look odd but have a simple explanation:</p>
   <div class="tablewrap"><table>
     <thead><tr><th>In the log</th><th>What it means</th></tr></thead>
@@ -575,7 +575,8 @@ read(3, buf, 40000)     → DATA(16 KiB)  DATA(16 KiB)  DATA(7 KiB)  SYSCALL</pr
 <section id="use">
   <h2>Commands</h2>
   <pre>make
-sudo ./sysrr -p PID -o rec.log       <span class="dim"># record one process; Ctrl-C stops</span>
+sudo ./sysrr -C NAME -o rec.log      <span class="dim"># record a whole container; Ctrl-C stops</span>
+sudo ./sysrr -p PID -o rec.log       <span class="dim"># record one process</span>
 sudo ./sysrr -f -p PID -o rec.log    <span class="dim"># and its children</span>
 sudo ./sysrr -r -p PID -o rec.log    <span class="dim"># also check for buffers changed during a call</span>
 sudo podman container checkpoint --leave-running -e ckpt.tar.gz NAME
@@ -583,6 +584,7 @@ sudo podman container checkpoint --leave-running -e ckpt.tar.gz NAME
 ./sysrr_dump rec.log                 <span class="dim"># read the log</span>
 ./sysrr_dump -s rec.log              <span class="dim"># is it complete?</span>
 ./sysrr_dump -g 1 rec.log            <span class="dim"># only generation 1</span></pre>
+  <p>sysrr also stops by itself when every recorded process has ended. Exit status 2 means records were lost, 3 that the log could not be written.</p>
   <p>For time to be recorded, <code>clock_gettime</code> must be a real syscall. Normally it answers in user space (the vDSO). Fix that on both machines with <code>echo acpi_pm | sudo tee /sys/devices/system/clocksource/clocksource0/current_clocksource</code>. The tests do this for you. It doesn't help <code>time()</code> or the coarse clocks: the vDSO answers those from a shared page whatever the clock source, so they're never recorded. Random bytes have the same gap on recent systems, because glibc's <code>getrandom()</code> also answers in user space, and this trick doesn't help there. The <a href="https://claude.ai/artifact/BrqbnVeMN3qqisG1nxenKb#limits">replay guide</a> explains what happens.</p>
   <p>One trap: if the target appends to a file in its container while you checkpoint, the restore fails with <code>bad size</code>. CRIU noted the size during the dump, and the file kept growing before podman archived it.</p>
 </section>

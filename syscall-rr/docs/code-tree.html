@@ -97,7 +97,7 @@ mark { background: var(--hit); color: inherit; border-radius: 2px; }
   <div class="eyebrow">sysrr · source map</div>
   <h1>sysrr Code Tree</h1>
   <p class="lede">Every function, struct, map and script in sysrr, sorted by the job it does. Open a branch to see what's inside. Click a name to open that line on GitHub.</p>
-  <p class="note">Line numbers are for commit <code>176ed3e</code>; the code hasn't changed since then. Switch to <em>By file</em> to see the same items in source order. Not listed: <code>raw_sysrr</code> (the first prototype), the generated <code>*.skel.h</code> files and <code>syscall_names.h</code>.</p>
+  <p class="note">Line numbers are for commit <code>d0ce885</code>. Switch to <em>By file</em> to see the same items in source order. Not listed: <code>raw_sysrr</code> (the first prototype), the generated <code>*.skel.h</code> files and <code>syscall_names.h</code>.</p>
   <div class="bar">
     <input type="search" id="q" placeholder="Search names and descriptions, e.g. futex, fd, CRIU" aria-label="Search the tree">
     <div class="seg" role="group" aria-label="Group by">
@@ -114,65 +114,66 @@ mark { background: var(--hit); color: inherit; border-radius: 2px; }
 
 <script>
 (function () {
-  var GH = 'https://github.com/wlog106/sysrr/blob/176ed3e/syscall-rr/';
+  var GH = 'https://github.com/wlog106/sysrr/blob/d0ce885/syscall-rr/';
   var B = 'sysrr.bpf.c', S = 'sysrr.c', H = 'sysrr.h', D = 'sysrr_dump.c', P = 'sysrr_replay.c', X = 'sysrr_search.sh';
+  var Q = 'podman_pid.h', R = 'sysrr_restore.sh';
   /* leaf: [kind, name, file, line, what it does]; group: { g, d, c } */
   function G(g, d, c) { return { g: g, d: d, c: c }; }
 
   var TREE = [
     G('Recording', 'Machine A. Watch a running program from the kernel and write down every syscall and its bytes.', [
       G('The hooks', 'eBPF programs the kernel runs at fixed moments, for every process. They return at once unless the process is a target.', [
-        ['bpf', 'sys_enter', B, 642, 'Every syscall entry. Takes the next seq, saves the 6 arguments in tstate, copies the inputs, and watches for ptrace.'],
-        ['bpf', 'sys_exit', B, 697, 'Every syscall exit. Copies the outputs and sends the REC_SYSCALL record that closes the call.'],
-        ['bpf', 'on_signal', B, 792, 'A signal is delivered to a target thread: records which one, where the thread was, and whether it kills.'],
-        ['bpf', 'on_exit', B, 814, 'A target thread ends: records its exit status.'],
-        ['bpf', 'on_fork', B, 827, 'A target forks (with -f): the child becomes a target too.']
+        ['bpf', 'sys_enter', B, 666, 'Every syscall entry. Takes the next seq, saves the 6 arguments in tstate, copies the inputs, and watches for ptrace.'],
+        ['bpf', 'sys_exit', B, 721, 'Every syscall exit. Copies the outputs and sends the REC_SYSCALL record that closes the call.'],
+        ['bpf', 'on_signal', B, 818, 'A signal is delivered to a target thread: records which one, where the thread was, and whether it kills.'],
+        ['bpf', 'on_exit', B, 840, 'A target thread ends: records its exit status. When a process\'s last thread ends, removes it from targets, so the map never fills up.'],
+        ['bpf', 'on_fork', B, 859, 'A target forks (with -f or -C): the child becomes a target too. If targets is full, counts a lost record so the log says so.']
       ]),
       G('Choosing what to copy', 'Two big switch statements that know, for about 300 syscalls, which arguments point to memory and how long it is.', [
-        ['bpf', 'capture_enter', B, 357, 'Inputs, copied at entry: write data, paths, addresses. Marked D_IN or D_STR.'],
-        ['bpf', 'capture_exit', B, 411, 'Outputs, copied at exit when the buffer holds the result: read data, stat, the time. Marked D_OUT.'],
-        ['bpf', 'user_u32', B, 126, 'Reads one 32-bit value from the program, e.g. a length that says how big a buffer is.']
+        ['bpf', 'capture_enter', B, 363, 'Inputs, copied at entry: write data, paths, addresses. Marked D_IN or D_STR.'],
+        ['bpf', 'capture_exit', B, 417, 'Outputs, copied at exit when the buffer holds the result: read data, stat, the time. Marked D_OUT.'],
+        ['bpf', 'user_u32', B, 129, 'Reads one 32-bit value from the program, e.g. a length that says how big a buffer is.']
       ]),
       G('Writing records', 'Everything leaves the kernel through the events ring buffer.', [
-        ['bpf', 'emit_buf', B, 197, 'Copies a buffer as one or more REC_DATA records of up to 16 KiB. Verified once, called from about 70 places.'],
-        ['bpf', 'chunk_cb', B, 153, 'One 16 KiB piece, built in scratch and copied into the ring. The bpf_loop callback behind emit_buf.'],
-        ['bpf', 'emit_str', B, 216, 'Copies a NUL-terminated string (a path) as REC_DATA.'],
-        ['bpf', 'emit_iov', B, 258, 'readv/writev: the iovec array, then each buffer it points to.'],
-        ['bpf', 'emit_msghdr', B, 286, 'recvmsg/sendmsg: the msghdr, its address, its iovecs and its control data.'],
-        ['bpf', 'emit_mmsg', B, 308, 'recvmmsg/sendmmsg: each message header in the array.'],
-        ['bpf', 'emit_syscall', B, 613, 'The REC_SYSCALL record: number, args, result, thread ids, generation, how many DATA records came before.'],
-        ['bpf', 'emit_marker', B, 547, 'A REC_MARKER: CRIU seized or released a thread, or a new generation started.'],
-        ['bpf', 'emit_signal', B, 760, 'A REC_SIGNAL: a signal or a thread\'s end, with the seq it came after.']
+        ['bpf', 'emit_buf', B, 200, 'Copies a buffer as one or more REC_DATA records of up to 16 KiB. Verified once, called from about 70 places. A buffer that fits one piece skips bpf_loop.'],
+        ['bpf', 'chunk_cb', B, 156, 'One 16 KiB piece, built in scratch and copied into the ring. The bpf_loop callback behind emit_buf.'],
+        ['bpf', 'emit_str', B, 222, 'Copies a NUL-terminated string (a path) as REC_DATA.'],
+        ['bpf', 'emit_iov', B, 264, 'readv/writev: the iovec array, then each buffer it points to.'],
+        ['bpf', 'emit_msghdr', B, 292, 'recvmsg/sendmsg: the msghdr, its address, its iovecs and its control data.'],
+        ['bpf', 'emit_mmsg', B, 314, 'recvmmsg/sendmmsg: each message header in the array.'],
+        ['bpf', 'emit_syscall', B, 629, 'The REC_SYSCALL record: number, args, result, thread ids, generation, how many DATA records came before. The container ids are looked up once per thread and kept in tstate.'],
+        ['bpf', 'emit_marker', B, 553, 'A REC_MARKER: CRIU seized or released a thread, or a new generation started.'],
+        ['bpf', 'emit_signal', B, 786, 'A REC_SIGNAL: a signal or a thread\'s end, with the seq it came after.']
       ]),
       G('Checkpoints and generations', 'How the recorder notices CRIU and marks where a replay must start.', [
-        ['bpf', 'handle_ptrace', B, 567, 'Sees every ptrace call on the machine; only callers named criu count (any, with -t). SEIZE of a target thread counts up, DETACH counts down; at zero, gen++. Line numbers here are from 176ed3e, before that check.'],
-        ['bpf', 'current_gen', B, 754, 'The generation a thread\'s next record belongs to. A thread CRIU already released counts as the next one.']
+        ['bpf', 'handle_ptrace', B, 576, 'Sees every ptrace call on the machine; only callers named criu count (any, with -t). SEIZE of a target thread counts up, DETACH counts down; at zero, gen++.'],
+        ['bpf', 'current_gen', B, 780, 'The generation a thread\'s next record belongs to. A thread CRIU already released counts as the next one.']
       ]),
       G('Filtering and costs', 'Keep other processes cheap and the ring from overflowing.', [
-        ['bpf', 'is_target', B, 117, 'Is this process one we record? One compare without -f, a hash lookup with it.'],
-        ['bpf', 'wake_flags', B, 103, 'Wakes sysrr only when the ring is a quarter full. Waking it every time was most of the slowdown.'],
-        ['bpf', 'count_lost', B, 109, 'The ring was full: count a lost record on this CPU.']
+        ['bpf', 'is_target', B, 120, 'Is this process one we record? One compare without -f, a hash lookup with it.'],
+        ['bpf', 'wake_flags', B, 106, 'Wakes sysrr only when the ring is a quarter full. Waking it every time was most of the slowdown.'],
+        ['bpf', 'count_lost', B, 112, 'The ring was full: count a lost record on this CPU.']
       ]),
       G('State the hooks share', 'Programs keep nothing between runs, so everything lives in maps.', [
-        ['map', 'events', B, 50, 'Ring buffer, 64 MiB. One ordered queue from all CPUs to sysrr.'],
-        ['map', 'targets', B, 57, 'Hash set of process ids to record (with -f).'],
-        ['struct', 'task_state', B, 59, 'One thread\'s notes from entry to exit: seq, args, generation, flags, whether CRIU holds it.'],
-        ['map', 'tstate', B, 78, 'Task storage holding a task_state per thread. It follows the thread to any CPU.'],
-        ['map', 'scratch', B, 88, 'Per-CPU 16 KiB staging area for one REC_DATA. Too big for the 512-byte BPF stack.'],
-        ['map', 'lost', B, 95, 'Per-CPU count of records that didn\'t fit.'],
-        ['var', 'seq_ctr', B, 43, 'Global counter. Every syscall entry takes the next number, atomically: the exact order across threads.'],
-        ['var', 'gen', B, 44, 'The current generation. Goes up when CRIU releases the program\'s last thread.'],
-        ['var', 'seized_cnt', B, 45, 'How many target threads CRIU holds right now.']
+        ['map', 'events', B, 51, 'Ring buffer, 64 MiB. One ordered queue from all CPUs to sysrr.'],
+        ['map', 'targets', B, 58, 'Hash set of process ids to record (with -f or -C). A process leaves it when its last thread ends.'],
+        ['struct', 'task_state', B, 60, 'One thread\'s notes from entry to exit: seq, args, generation, flags, whether CRIU holds it, and its ids in the container (ns_ok: looked up already).'],
+        ['map', 'tstate', B, 81, 'Task storage holding a task_state per thread. It follows the thread to any CPU.'],
+        ['map', 'scratch', B, 91, 'Per-CPU 16 KiB staging area for one REC_DATA. Too big for the 512-byte BPF stack.'],
+        ['map', 'lost', B, 98, 'Per-CPU count of records that didn\'t fit.'],
+        ['var', 'seq_ctr', B, 44, 'Global counter. Every syscall entry takes the next number, atomically: the exact order across threads.'],
+        ['var', 'gen', B, 45, 'The current generation. Goes up when CRIU releases the program\'s last thread.'],
+        ['var', 'seized_cnt', B, 46, 'How many target threads CRIU holds right now.']
       ]),
       G('The loader: sysrr.c', 'User space. Loads the eBPF side, then moves records from the ring to the file.', [
-        ['fn', 'main', S, 163, 'Parses -p/-o/-f/-r, sets constants, loads and attaches the programs, writes the file header, polls the ring every 10 ms.'],
-        ['fn', 'handle_rec', S, 28, 'Called once per record from the ring: counts it and fwrites it to rec.log unchanged.'],
-        ['fn', 'add_descendants', S, 124, 'With -f: children the target already has (nginx workers) become targets from the start.'],
-        ['fn', 'cgroup_id_of', S, 58, 'The target\'s cgroup id, so the hooks can skip everything outside its container with one compare.'],
-        ['fn', 'ns_pid_of', S, 81, 'The target\'s pid inside its own namespace, from /proc/PID/status.'],
-        ['fn', 'ppid_of', S, 108, 'A process\'s parent, from /proc/PID/stat.'],
-        ['fn', 'on_sig', S, 26, 'Ctrl-C or SIGTERM: stop the polling loop.'],
-        ['fn', 'usage', S, 150, 'Prints the options.']
+        ['fn', 'main', S, 171, 'Parses -p or -C NAME (a whole container, implies -f), -o, -f, -r, -t, -b; sets constants, loads and attaches the programs, writes the file header, polls the ring every 10 ms until Ctrl-C or until every recorded process has ended. Exits 0 when complete, 2 when records were lost, 3 when the log could not be written.'],
+        ['fn', 'handle_rec', S, 30, 'Called once per record from the ring: counts it and fwrites it to rec.log unchanged. A failed write stops the recording (exit 3).'],
+        ['fn', 'add_descendants', S, 126, 'With -f: children the target already has (nginx workers) become targets from the start.'],
+        ['fn', 'cgroup_id_of', S, 60, 'The target\'s cgroup id, so the hooks can skip everything outside its container with one compare.'],
+        ['fn', 'ns_pid_of', S, 83, 'The target\'s pid inside its own namespace, from /proc/PID/status.'],
+        ['fn', 'ppid_of', S, 110, 'A process\'s parent, from /proc/PID/stat.'],
+        ['fn', 'on_sig', S, 28, 'Ctrl-C or SIGTERM: stop the polling loop.'],
+        ['fn', 'usage', S, 152, 'Prints the options.']
       ])
     ]),
 
@@ -192,7 +193,7 @@ mark { background: var(--hit); color: inherit; border-radius: 2px; }
         ['struct', 'marker_kind', H, 59, 'M_SEIZE, M_DETACH, M_GEN.']
       ]),
       G('Reading the log: sysrr_dump.c', 'Prints a log and checks it is complete.', [
-        ['fn', 'main', D, 234, 'Options -g (one generation), -a, -x (hex), -s (summary and integrity check), -r (race check).'],
+        ['fn', 'main', D, 234, 'Options -g (one generation), -a, -x (hex), -s (summary and integrity check), -r (race check). Checks the log version, and stops at a broken or truncated record instead of reading past it.'],
         ['fn', 'on_syscall', D, 157, 'Prints one syscall with the DATA records parked for its seq, and checks their count against ndata.'],
         ['fn', 'mark_seen', D, 45, 'Notes a seq in a bitmap, to report holes (missing syscalls) at the end.'],
         ['fn', 'check_race', D, 129, 'With -r: compares an input copied at entry with the copy made at exit. A difference means it changed during the call.'],
@@ -202,156 +203,164 @@ mark { background: var(--hit); color: inherit; border-radius: 2px; }
       ])
     ]),
 
+    G('Restoring', 'Machine B, before the replay. Bring the checkpoint back stopped, and name containers instead of pids.', [
+      ['sh', 'sysrr_restore.sh', R, 1, 'Restores a checkpoint left stopped: adds leave-stopped to /etc/criu/default.conf for the restore only, switches to acpi_pm, checks the copy is stopped (state T), prints its name and pid.'],
+      ['sh', 'put_back', R, 51, 'Puts /etc/criu/default.conf back as it was, also when the restore fails or is interrupted.'],
+      ['fn', 'podman_pid', Q, 13, 'Container name to the host pid of its first process (podman inspect, no shell). Used by sysrr -C and sysrr_replay -C.']
+    ]),
+
     G('Replay', 'Machine B. Drive a restored copy through one generation of the log: sysrr_replay.c.', [
       G('The main loop', 'Wait for a parked syscall, decide, answer, repeat.', [
-        ['fn', 'main', P, 3143, 'Options, then load the log, order it (-T), attach to every process of the copy, and supervise.'],
-        ['fn', 'supervise', P, 2963, 'polls every listener, reads notifications (NOTIF_RECV), hands each to handle(). Detects a stall after 20 s.'],
-        ['fn', 'handle', P, 2550, 'One parked syscall: find the thread\'s next record, check it, fake it or let it run, answer.'],
-        ['fn', 'respond', P, 984, 'SECCOMP_IOCTL_NOTIF_SEND: either a result for a faked call or CONTINUE for one that runs.'],
-        ['fn', 'consume', P, 2295, 'Marks a record used.'],
-        ['fn', 'next_ent', P, 1968, 'A thread\'s next unused record.'],
-        ['fn', 'thread_for', P, 916, 'The recorded thread for a container thread id; a new thread gets its queue here.'],
-        ['fn', 'ns_tid_of', P, 877, 'Host thread id to container thread id.'],
-        ['fn', 'tgid_of', P, 816, 'The process a thread belongs to.'],
-        ['fn', 'pidfd_for', P, 831, 'A pidfd for a thread\'s process, kept for pidfd_getfd and signals.'],
-        ['struct', 'proc', P, 812, 'One process of the copy: its listener fd and pidfd.'],
-        ['fn', 'on_int', P, 2867, 'Ctrl-C: end the replay cleanly.']
+        ['fn', 'main', P, 3247, 'Options (the copy by -p PID or -C NAME), then load the log, order it (-T), attach to every process of the copy, deliver the signals that landed during the freeze, and supervise.'],
+        ['fn', 'supervise', P, 3002, 'polls every listener, reads notifications (NOTIF_RECV), hands each to handle(). Detects a stall after 20 s.'],
+        ['fn', 'handle', P, 2581, 'One parked syscall: find the thread\'s next record, check it, fake it or let it run, answer.'],
+        ['fn', 'respond', P, 1009, 'SECCOMP_IOCTL_NOTIF_SEND: either a result for a faked call or CONTINUE for one that runs.'],
+        ['fn', 'consume', P, 2326, 'Marks a record used.'],
+        ['fn', 'next_ent', P, 1999, 'A thread\'s next unused record.'],
+        ['fn', 'thread_for', P, 941, 'The recorded thread for a container thread id; a new thread gets its queue here.'],
+        ['fn', 'ns_tid_of', P, 902, 'Host thread id to container thread id.'],
+        ['fn', 'tgid_of', P, 841, 'The process a thread belongs to.'],
+        ['fn', 'pidfd_for', P, 856, 'A pidfd for a thread\'s process, kept for pidfd_getfd and signals.'],
+        ['struct', 'proc', P, 837, 'One process of the copy: its listener fd and pidfd.'],
+        ['fn', 'on_int', P, 2906, 'Ctrl-C: end the replay cleanly.']
       ]),
       G('Taking over the copy', 'The restored copy is frozen. A few milliseconds of ptrace plant a seccomp filter in it; after that, no ptrace.', [
-        ['fn', 'attach_listener', P, 173, 'Makes the copy run mmap, prctl, timer resets and seccomp(NEW_LISTENER) on itself, then takes the listener fd.'],
-        ['fn', 'inject', P, 147, 'Makes the stopped process execute one syscall, through "syscall; int3" written at its instruction pointer.'],
-        ['fn', 'continue_one', P, 129, 'Lets one of our own injected calls through the filter we just installed.'],
-        ['fn', 'xptrace', P, 117, 'ptrace that stops with a message on error.']
+        ['fn', 'attach_listener', P, 174, 'Makes the copy run mmap, prctl, timer resets and seccomp(NEW_LISTENER) on itself, then takes the listener fd.'],
+        ['fn', 'inject', P, 148, 'Makes the stopped process execute one syscall, through "syscall; int3" written at its instruction pointer.'],
+        ['fn', 'continue_one', P, 130, 'Lets one of our own injected calls through the filter we just installed.'],
+        ['fn', 'xptrace', P, 118, 'ptrace that stops with a message on error.']
       ]),
       G('Loading the log', 'Keep one generation, give each thread a queue, tie data and signals to their calls.', [
-        ['fn', 'load', P, 430, 'Maps the file, keeps generation N without F_DUMP, attaches DATA records by seq, builds one queue per thread.'],
-        ['struct', 'ent', P, 275, 'One recorded call during replay: its records, whether it is used, its -T keys, its signals.'],
-        ['struct', 'thr', P, 290, 'One recorded thread: its queue, its position, what it is waiting for.'],
-        ['fn', 'plan_signals', P, 390, 'Ties each recorded timer or outside signal to the call it interrupted.'],
-        ['fn', 'sig_of_kill', P, 379, 'Which signal a kill/tgkill/sigqueue record sent.'],
-        ['fn', 'cmp_ent', P, 327, 'Sort records by seq.'],
-        ['fn', 'find_ent', P, 333, 'Binary search for a record by seq.'],
-        ['fn', 'thr_of', P, 346, 'The thread with a given container thread id.'],
-        ['fn', 'is_restart_ret', P, 354, 'Result -512 to -516: the call was interrupted and will run again.'],
-        ['fn', 'is_clone', P, 322, 'clone, clone3, fork or vfork.']
+        ['fn', 'load', P, 448, 'Maps the file, keeps generation N without F_DUMP, attaches DATA records by seq, builds one queue per thread.'],
+        ['struct', 'ent', P, 276, 'One recorded call during replay: its records, whether it is used, its -T keys, its signals.'],
+        ['struct', 'thr', P, 291, 'One recorded thread: its queue, its position, what it is waiting for.'],
+        ['fn', 'plan_signals', P, 408, 'Ties each recorded timer or outside signal to the call it interrupted.'],
+        ['fn', 'sig_of_kill', P, 397, 'Which signal a kill/tgkill/sigqueue record sent.'],
+        ['fn', 'cmp_ent', P, 329, 'Sort records by seq.'],
+        ['fn', 'find_ent', P, 335, 'Binary search for a record by seq.'],
+        ['fn', 'thr_of', P, 348, 'The thread with a given container thread id.'],
+        ['fn', 'is_restart_ret', P, 356, 'Result -512 to -516: the call was interrupted and will run again.'],
+        ['fn', 'is_clone', P, 324, 'clone, clone3, fork or vfork.']
       ]),
       G('Checking a call', 'A copy that has drifted hands the kernel something the original didn\'t. These catch it.', [
-        ['fn', 'same_call', P, 2359, 'Is this the recorded call? The number, plus the clock id for clock_gettime.'],
-        ['fn', 'check_inputs', P, 1293, 'Reads every D_IN and D_STR piece from the copy\'s memory and compares it byte for byte.'],
-        ['fn', 'resolve', P, 731, 'Where a recorded piece lives in the copy, from the call\'s arguments (and its iovec or msghdr).'],
-        ['fn', 'mem_read', P, 715, 'process_vm_readv from the copy.'],
-        ['fn', 'mem_read_str', P, 1523, 'A path from the copy, page by page.'],
-        ['fn', 'fd_args', P, 2418, 'Which arguments are file descriptors. A different fd is a divergence.'],
-        ['fn', 'nargs', P, 682, 'How many arguments are worth comparing for a call.'],
-        ['fn', 'is_iov_call', P, 706, 'readv, writev and friends.'],
-        ['fn', 'is_msg_call', P, 712, 'recvmsg or sendmsg.'],
-        ['fn', 'from_vdso', P, 1256, 'Did this call come from vDSO code? Such calls were never recorded.'],
-        ['fn', 'is_timing_only', P, 2351, 'Calls whose number depends on timing (futex, yield, sleep): one missing from the log still runs.'],
-        ['fn', 'is_housekeeping', P, 2387, 'Allocator mmap/munmap that can differ harmlessly.'],
-        ['fn', 'same_block', P, 2394, 'Same call and same second argument: the retry of an interrupted wait.']
+        ['fn', 'same_call', P, 2390, 'Is this the recorded call? The number, plus the clock id for clock_gettime.'],
+        ['fn', 'check_inputs', P, 1324, 'Reads every D_IN and D_STR piece from the copy\'s memory and compares it byte for byte.'],
+        ['fn', 'resolve', P, 756, 'Where a recorded piece lives in the copy, from the call\'s arguments (and its iovec or msghdr).'],
+        ['fn', 'mem_read', P, 740, 'process_vm_readv from the copy.'],
+        ['fn', 'mem_read_str', P, 1554, 'A path from the copy, page by page.'],
+        ['fn', 'fd_args', P, 2449, 'Which arguments are file descriptors. A different fd is a divergence.'],
+        ['fn', 'nargs', P, 707, 'How many arguments are worth comparing for a call.'],
+        ['fn', 'is_iov_call', P, 731, 'readv, writev and friends.'],
+        ['fn', 'is_msg_call', P, 737, 'recvmsg or sendmsg.'],
+        ['fn', 'from_vdso', P, 1287, 'Did this call come from vDSO code? Such calls were never recorded.'],
+        ['fn', 'is_timing_only', P, 2382, 'Calls whose number depends on timing (futex, yield, sleep): one missing from the log still runs.'],
+        ['fn', 'is_housekeeping', P, 2418, 'Allocator mmap/munmap that can differ harmlessly.'],
+        ['fn', 'same_block', P, 2425, 'Same call and same second argument: the retry of an interrupted wait.']
       ]),
       G('Fake or run', 'A call that tells the program about the outside is faked. A call that changes the program itself runs.', [
-        ['fn', 'runs_real', P, 644, 'The decision for one call. Takes failures, -T lock waits and pending signals into account.'],
-        ['fn', 'passthrough', P, 542, 'The list of calls that always run: memory, signals, threads, exec, exit, futex, close.'],
-        ['fn', 'futex_waits', P, 586, 'Is this futex op a wait?'],
-        ['fn', 'takes_pending_signal', P, 630, 'sigwaitinfo or a signalfd read whose signal is really pending in the copy: it must run.'],
-        ['fn', 'sig_in_mask', P, 593, 'Is a signal in a thread\'s blocked or pending set, from /proc.'],
-        ['fn', 'sig_pending', P, 612, 'Is a signal waiting for this thread?'],
-        ['fn', 'is_standin', P, 575, 'Is this fd one of replay\'s memfd stand-ins? Writes to those run for real.'],
-        ['fn', 'fd_is', P, 617, 'Does this fd of the copy point at a given file?']
+        ['fn', 'runs_real', P, 669, 'The decision for one call. Takes failures, -T lock waits and pending signals into account.'],
+        ['fn', 'passthrough', P, 567, 'The list of calls that always run: memory, signals, threads, exec, exit, futex, close.'],
+        ['fn', 'futex_waits', P, 611, 'Is this futex op a wait?'],
+        ['fn', 'takes_pending_signal', P, 655, 'sigwaitinfo or a signalfd read whose signal is really pending in the copy: it must run.'],
+        ['fn', 'sig_in_mask', P, 618, 'Is a signal in a thread\'s blocked or pending set, from /proc.'],
+        ['fn', 'sig_pending', P, 637, 'Is a signal waiting for this thread?'],
+        ['fn', 'is_standin', P, 600, 'Is this fd one of replay\'s memfd stand-ins? Writes to those run for real.'],
+        ['fn', 'fd_is', P, 642, 'Does this fd of the copy point at a given file?']
       ]),
       G('Faking a call', 'The call doesn\'t run. The copy gets the recorded bytes and result.', [
-        ['fn', 'inject_outputs', P, 1366, 'Writes every D_OUT piece where the arguments point, after resolving all addresses first.'],
-        ['fn', 'mem_write', P, 721, 'process_vm_writev into the copy.'],
-        ['fn', 'capture_write', P, 1415, 'Saves what the copy writes to stdout/stderr, for -w.'],
-        ['fn', 'remember_stdio', P, 1393, 'Notes which files the copy\'s stdout and stderr are.'],
-        ['fn', 'is_stdio', P, 1403, 'Is this fd the container\'s stdout or stderr? Decided by the file, not the number.']
+        ['fn', 'inject_outputs', P, 1397, 'Writes every D_OUT piece where the arguments point, after resolving all addresses first.'],
+        ['fn', 'mem_write', P, 746, 'process_vm_writev into the copy.'],
+        ['fn', 'capture_write', P, 1446, 'Saves what the copy writes to stdout/stderr, for -w.'],
+        ['fn', 'remember_stdio', P, 1424, 'Notes which files the copy\'s stdout and stderr are.'],
+        ['fn', 'is_stdio', P, 1434, 'Is this fd the container\'s stdout or stderr? Decided by the file, not the number.']
       ]),
       G('File descriptors', 'A faked open still needs a real fd at the recorded number, because later real calls (mmap, close) use it.', [
-        ['fn', 'install_fds', P, 1701, 'Answers a faked fd-creating call by placing real fds at the recorded numbers.'],
-        ['fn', 'make_fd', P, 1622, 'A real object of the same kind: the same file, a socket, a pipe, an eventfd, or a stand-in.'],
-        ['fn', 'open_like', P, 1553, 'Opens the file an open() names, inside the container\'s root (RESOLVE_IN_ROOT), without O_CREAT or O_TRUNC.'],
-        ['fn', 'addfd', P, 1687, 'SECCOMP_IOCTL_NOTIF_ADDFD: put an fd into the copy at an exact number.'],
-        ['fn', 'install_scm_fds', P, 1786, 'recvmsg that received fds (SCM_RIGHTS): stand-ins at the numbers in the recorded control data.'],
-        ['fn', 'fd_kind', P, 1469, 'Which calls create fds, and how many.'],
-        ['fn', 'fd_cloexec', P, 1493, 'Does the new fd get close-on-exec? Every call spells it differently.'],
-        ['fn', 'target_has_fd', P, 1679, 'Is an fd number open in the copy right now?'],
-        ['fn', 'devnull', P, 1541, 'Fallback: /dev/null, with a note why.']
+        ['fn', 'install_fds', P, 1732, 'Answers a faked fd-creating call by placing real fds at the recorded numbers.'],
+        ['fn', 'make_fd', P, 1653, 'A real object of the same kind: the same file, a socket, a pipe, an eventfd, or a stand-in.'],
+        ['fn', 'open_like', P, 1584, 'Opens the file an open() names, inside the container\'s root (RESOLVE_IN_ROOT), without O_CREAT or O_TRUNC.'],
+        ['fn', 'addfd', P, 1718, 'SECCOMP_IOCTL_NOTIF_ADDFD: put an fd into the copy at an exact number.'],
+        ['fn', 'install_scm_fds', P, 1817, 'recvmsg that received fds (SCM_RIGHTS): stand-ins at the numbers in the recorded control data.'],
+        ['fn', 'fd_kind', P, 1500, 'Which calls create fds, and how many.'],
+        ['fn', 'fd_cloexec', P, 1524, 'Does the new fd get close-on-exec? Every call spells it differently.'],
+        ['fn', 'target_has_fd', P, 1710, 'Is an fd number open in the copy right now?'],
+        ['fn', 'devnull', P, 1572, 'Fallback: /dev/null, with a note why.']
       ]),
       G('Memory and processes', 'Calls that run must produce the same addresses and ids as live.', [
-        ['fn', 'needs_pin', P, 1833, 'Did the kernel choose this mapping\'s address? Then it must land where it landed live.'],
-        ['fn', 'pin_address', P, 1847, 'Reissues the mmap with MAP_FIXED_NOREPLACE at the recorded address, with a brief ptrace.'],
-        ['fn', 'range_mapped', P, 2400, 'Is any part of a range already mapped in the copy?'],
-        ['fn', 'set_next_pid', P, 958, 'Writes ns_last_pid so the next clone gets the recorded id.'],
-        ['fn', 'expect_child', P, 944, 'A clone returned: wait for the child and attach its listener.'],
-        ['fn', 'has_execed', P, 2373, 'Did this process execve during the replay? Its addresses are random again.'],
-        ['fn', 'note_exec', P, 2381, 'Remember that a process execed.']
+        ['fn', 'needs_pin', P, 1864, 'Did the kernel choose this mapping\'s address? Then it must land where it landed live.'],
+        ['fn', 'pin_address', P, 1878, 'Reissues the mmap with MAP_FIXED_NOREPLACE at the recorded address, with a brief ptrace.'],
+        ['fn', 'range_mapped', P, 2431, 'Is any part of a range already mapped in the copy?'],
+        ['fn', 'set_next_pid', P, 983, 'Writes ns_last_pid so the next clone gets the recorded id.'],
+        ['fn', 'expect_child', P, 969, 'A clone returned: wait for the child and attach its listener.'],
+        ['fn', 'has_execed', P, 2404, 'Did this process execve during the replay? Its addresses are random again.'],
+        ['fn', 'note_exec', P, 2412, 'Remember that a process execed.']
       ]),
       G('Signals', 'Signals arrive at the call they interrupted live.', [
-        ['fn', 'return_with_signals', P, 1914, 'Answers a call and makes recorded signals arrive as it returns.'],
-        ['fn', 'signals_then_again', P, 1951, 'Delivers signals to a thread parked at a call that will run again after the handlers.'],
-        ['fn', 'sends_sigpipe', P, 1895, 'A faked write to a pipe or socket nobody reads also sends SIGPIPE.'],
-        ['fn', 'kill_all', P, 859, 'Stop, continue or kill every process of the copy.']
+        ['fn', 'return_with_signals', P, 1945, 'Answers a call and makes recorded signals arrive as it returns.'],
+        ['fn', 'signals_then_again', P, 1982, 'Delivers signals to a thread parked at a call that will run again after the handlers.'],
+        ['fn', 'sends_sigpipe', P, 1926, 'A faked write to a pipe or socket nobody reads also sends SIGPIPE.'],
+        ['fn', 'signals_at_checkpoint', P, 3195, 'Before the copy runs: a signal that reached a thread live while CRIU had it frozen goes out now, at the same instruction (its recorded rip and rsp are the restored registers).'],
+        ['fn', 'landed_in_freeze', P, 367, 'Did the signal reach its thread within 2 ms of CRIU letting the thread go (M_DETACH marker)? Only then does a rip/rsp match prove it landed during the freeze.'],
+        ['fn', 'kill_all', P, 884, 'Stop, continue or kill every process of the copy.']
       ]),
       G('Thread order: -T and -S', 'With shared memory, who runs first matters and the log doesn\'t say. -T lets one thread run program code at a time.', [
         G('Building the order', 'Done once, after load.', [
-          ['fn', 'order_serial', P, 2092, 'Gives every record its turn: when its call returned live. Applies -F flips.'],
-          ['fn', 'release_time', P, 1997, 'The moment a record counts: its exit, or its start for clone, execve and calls that free something.'],
-          ['fn', 'frees', P, 1991, 'close, munmap, dup2, dup3: calls that give a number or an address back.'],
-          ['fn', 'cmp_exit', P, 2004, 'Sort records by their turn.'],
-          ['fn', 'find_deps', P, 2049, 'Facts that beat the guess: an epoll event comes after the epoll_ctl that armed it.'],
-          ['fn', 'piece', P, 2041, 'A record\'s data piece of a given kind and argument.'],
-          ['fn', 'flipped', P, 2029, 'Is this record in the -F list?']
+          ['fn', 'order_serial', P, 2123, 'Gives every record its turn: when its call returned live. Applies -F flips.'],
+          ['fn', 'release_time', P, 2028, 'The moment a record counts: its exit, or its start for clone, execve and calls that free something.'],
+          ['fn', 'frees', P, 2022, 'close, munmap, dup2, dup3: calls that give a number or an address back.'],
+          ['fn', 'cmp_exit', P, 2035, 'Sort records by their turn.'],
+          ['fn', 'find_deps', P, 2080, 'Facts that beat the guess: an epoll event comes after the epoll_ctl that armed it.'],
+          ['fn', 'piece', P, 2072, 'A record\'s data piece of a given kind and argument.'],
+          ['fn', 'flipped', P, 2060, 'Is this record in the -F list?']
         ]),
         G('Whose turn is it', 'Asked for every parked call.', [
-          ['fn', 'next_exit_is', P, 2235, 'Is this record the next in the turn order? Skips threads asleep in waits.'],
-          ['fn', 'global_next_seq_is', P, 2288, '-S: is this record the next in seq order?'],
-          ['fn', 'running_thread', P, 2255, 'Which thread is running program code now. Everyone else waits.'],
-          ['fn', 'dep_waiting', P, 2084, 'Is a record still waiting for a record it depends on?'],
-          ['fn', 'blocks', P, 2265, 'Might this call sleep in the kernel? Then the next thread may go.'],
-          ['fn', 'asleep', P, 2229, 'Is a thread asleep in a wait the recording doesn\'t have?'],
-          ['fn', 'lock_free_yet', P, 2210, 'A thread found a lock taken live but free here: it goes later.'],
-          ['fn', 'lock_holder_first', P, 2935, 'The next thread waits on a lock: let the holder run first.']
+          ['fn', 'next_exit_is', P, 2266, 'Is this record the next in the turn order? Skips threads asleep in waits.'],
+          ['fn', 'global_next_seq_is', P, 2319, '-S: is this record the next in seq order?'],
+          ['fn', 'running_thread', P, 2286, 'Which thread is running program code now. Everyone else waits.'],
+          ['fn', 'dep_waiting', P, 2115, 'Is a record still waiting for a record it depends on?'],
+          ['fn', 'blocks', P, 2296, 'Might this call sleep in the kernel? Then the next thread may go.'],
+          ['fn', 'asleep', P, 2260, 'Is a thread asleep in a wait the recording doesn\'t have?'],
+          ['fn', 'lock_free_yet', P, 2241, 'A thread found a lock taken live but free here: it goes later.'],
+          ['fn', 'lock_holder_first', P, 2974, 'The next thread waits on a lock: let the holder run first.']
         ]),
         G('Threads at the start', 'Threads restored in the middle of program code.', [
-          ['fn', 'hold_thread', P, 2156, 'Keeps a restored thread in a ptrace stop until its turn to start.'],
-          ['fn', 'first_held', P, 2176, 'The held thread whose turn comes first.'],
-          ['fn', 'start_threads', P, 2188, 'Starts held threads whose turn has come.'],
-          ['fn', 'only_unstarted_left', P, 2314, 'Is every remaining record in a thread that never started?']
+          ['fn', 'hold_thread', P, 2187, 'Keeps a restored thread in a ptrace stop until its turn to start.'],
+          ['fn', 'first_held', P, 2207, 'The held thread whose turn comes first.'],
+          ['fn', 'start_threads', P, 2219, 'Starts held threads whose turn has come.'],
+          ['fn', 'only_unstarted_left', P, 2345, 'Is every remaining record in a thread that never started?']
         ]),
         G('Lock waits the log lacks', 'Waits that happened only in the replay are held and answered later.', [
-          ['fn', 'hold_wait', P, 2453, 'Holds an unrecorded futex wait instead of letting it sleep.'],
-          ['fn', 'note_wake', P, 2488, 'A real futex wake ran: mark the held waits it wakes.'],
-          ['fn', 'wake_count', P, 2478, 'How many waiters a futex op wakes.'],
-          ['fn', 'answer_held', P, 2505, 'Answers a held wait.'],
-          ['fn', 'release_woken', P, 2516, 'Answers a woken held wait when its thread\'s turn comes.'],
-          ['fn', 'release_any_held', P, 2536, 'Nothing can move: wake one held wait (spurious wakes are allowed).']
+          ['fn', 'hold_wait', P, 2484, 'Holds an unrecorded futex wait instead of letting it sleep.'],
+          ['fn', 'note_wake', P, 2519, 'A real futex wake ran: mark the held waits it wakes.'],
+          ['fn', 'wake_count', P, 2509, 'How many waiters a futex op wakes.'],
+          ['fn', 'answer_held', P, 2536, 'Answers a held wait.'],
+          ['fn', 'release_woken', P, 2547, 'Answers a woken held wait when its thread\'s turn comes.'],
+          ['fn', 'release_any_held', P, 2567, 'Nothing can move: wake one held wait (spurious wakes are allowed).']
         ])
       ]),
       G('Endings and reports', 'How a replay ends, and what it prints.', [
-        ['fn', 'diverge', P, 1272, 'Prints the DIVERGENCE line: the recorded call and the call the copy made.'],
-        ['fn', 'history', P, 789, 'The thread\'s last calls, for the report.'],
-        ['fn', 'finish', P, 1213, 'Does what -e says: stop (freeze the copy), live (let it go on), or kill.'],
-        ['fn', 'end_reached', P, 2323, 'Every usable record is used: the copy is where the original was at Ctrl-C.'],
-        ['fn', 'explain_stall', P, 2874, 'Nothing moved for 20 s: says who is waiting for whom.'],
-        ['fn', 'report_early_end', P, 2908, 'The copy ended but the live run went on.'],
-        ['fn', 'report_live_end', P, 1081, 'Compares how the copy ended with how the original did.'],
-        ['fn', 'live_death', P, 1060, 'The signal that killed the live run, if any.'],
-        ['fn', 'own_end', P, 1047, 'How a thread ended according to the log.'],
-        ['fn', 'is_fault', P, 1037, 'SIGSEGV, SIGBUS, SIGFPE or SIGILL raised by the CPU.'],
-        ['fn', 'snapshot_maps', P, 1008, 'The copy\'s memory map at the start, to name code addresses in reports.'],
-        ['fn', 'where', P, 1025, 'An address as library+offset.'],
-        ['fn', 'print_totals', P, 1110, 'Counts at the end: faked, run, pinned, signals.'],
-        ['fn', 'fmt_call', P, 771, 'Formats a call with its arguments.'],
-        ['fn', 'preview', P, 781, 'The start of a buffer, for the report.'],
-        ['fn', 'sysname', P, 92, 'Syscall number to name.']
+        ['fn', 'diverge', P, 1303, 'Prints the DIVERGENCE line: the recorded call and the call the copy made.'],
+        ['fn', 'history', P, 814, 'The thread\'s last calls, for the report.'],
+        ['fn', 'finish', P, 1244, 'Does what -e says: stop (freeze the copy), live (let it go on), or kill.'],
+        ['fn', 'end_reached', P, 2354, 'Every usable record is used: the copy is where the original was at Ctrl-C.'],
+        ['fn', 'explain_stall', P, 2913, 'Nothing moved for 20 s: says who is waiting for whom.'],
+        ['fn', 'report_early_end', P, 2947, 'The copy ended but the live run went on.'],
+        ['fn', 'report_live_end', P, 1106, 'Compares how the copy ended with how the original did.'],
+        ['fn', 'live_death', P, 1085, 'The signal that killed the live run, if any.'],
+        ['fn', 'own_end', P, 1072, 'How a thread ended according to the log.'],
+        ['fn', 'is_fault', P, 1062, 'SIGSEGV, SIGBUS, SIGFPE or SIGILL raised by the CPU.'],
+        ['fn', 'snapshot_maps', P, 1033, 'The copy\'s memory map at the start, to name code addresses in reports.'],
+        ['fn', 'where', P, 1050, 'An address as library+offset.'],
+        ['fn', 'print_totals', P, 1135, 'Counts at the end: faked, run, pinned, signals.'],
+        ['fn', 'fmt_call', P, 796, 'Formats a call with its arguments.'],
+        ['fn', 'preview', P, 806, 'The start of a buffer, for the report.'],
+        ['fn', 'sysname', P, 93, 'Syscall number to name.']
       ])
     ]),
 
     G('Searching for an order', 'When -T guesses wrong, try other guesses until the log replays to its end.', [
-      ['fn', 'search_report', P, 1169, 'At a divergence, prints SEARCH progress, SEARCH at and SEARCH candidates for the script.'],
-      ['fn', 'overlaps', P, 1155, 'Does a record\'s stretch of code overlap a time window?'],
-      ['fn', 'add_cand', P, 1160, 'Adds a record to the list of suspects, once.'],
+      ['fn', 'search_report', P, 1200, 'At a divergence, prints SEARCH progress, SEARCH at and SEARCH candidates for the script.'],
+      ['fn', 'overlaps', P, 1186, 'Does a record\'s stretch of code overlap a time window?'],
+      ['fn', 'add_cand', P, 1191, 'Adds a record to the list of suspects, once.'],
       ['sh', 'sysrr_search.sh', X, 1, 'The search: restore the checkpoint, replay with -F flips, keep a flip if the replay gets past the old divergence.'],
       ['sh', 'attempt', X, 55, 'One restore and one replay with a given flip list; returns progress and new suspects.'],
       ['sh', 'search loop', X, 86, 'Tries each suspect alone, then pairs of the six strongest. Prints FOUND -F … or BEST -F ….'],
@@ -359,11 +368,13 @@ mark { background: var(--hit); color: inherit; border-radius: 2px; }
     ]),
 
     G('Tests', 'tests/: programs to record, and scripts that run the whole journey and compare copy with original.', [
-      ['test', 'run_all.sh', 'tests/run_all.sh', 1, 'The suite: 29 tests (28 programs through the whole journey, plus the tracer check), one or two machines (REMOTE=), repeats (ROUNDS=), name filters.'],
+      ['test', 'run_all.sh', 'tests/run_all.sh', 1, 'The suite: 30 tests (29 programs through the whole journey, plus the tracer check), one or two machines (REMOTE=), repeats (ROUNDS=), name filters.'],
       ['test', 'test_tracer.sh', 'tests/test_tracer.sh', 1, 'strace attached to a recorded program must not count as a checkpoint; with sysrr -t it must.'],
       ['test', 'run_crashes.sh', 'tests/run_crashes.sh', 1, 'Crash catalogue: 32 ways to die, each recorded and replayed to the same death.'],
-      ['test', 'test_replay.sh', 'tests/test_replay.sh', 1, 'The first end-to-end test, including the tampered-log check (tamper_log.py).'],
+      ['test', 'test_replay.sh', 'tests/test_replay.sh', 1, 'The end-to-end test most suite entries use: record (-C for a whole container), checkpoint, restore with sysrr_restore.sh, replay by name, compare. Includes the tampered-log check (tamper_log.py).'],
       ['test', 'test_redis.sh · test_nginx.sh · test_memcached.sh · test_httpd.sh', 'tests/test_redis.sh', 1, 'Real servers: the copy must end with the same data or serve requests with the same threads.'],
+      ['test', 'sigckpt_target.c', 'tests/sigckpt_target.c', 1, 'Test sig-ckpt: computes without syscalls and prints where each SIGUSR1 landed. The replay must deliver the one sent during the checkpoint at the same instruction.'],
+      ['test', 'ckpt_kick.sh', 'tests/ckpt_kick.sh', 1, 'CRIU action script for CKPT_KICK=SIG: at post-dump it sends the signal, so it lands while the process is frozen.'],
       ['test', '*_target.c', 'tests/mt_target.c', 1, 'Small target programs: threads, pools, forks, signals, files, network, races, crashes.']
     ])
   ];
@@ -385,7 +396,7 @@ mark { background: var(--hit); color: inherit; border-radius: 2px; }
       if (!files[f]) { files[f] = []; order.push(f); }
       if (files[f].indexOf(l) < 0) files[f].push(l);
     });
-    var DESC = { 'sysrr.bpf.c': 'The recorder\'s kernel half: eBPF programs and maps.', 'sysrr.c': 'The recorder\'s user half: loader and file writer.', 'sysrr.h': 'The log format, shared by every tool.', 'sysrr_dump.c': 'Prints and checks a log.', 'sysrr_replay.c': 'The replayer.', 'sysrr_search.sh': 'The order search.', 'tests/': 'The test suite.' };
+    var DESC = { 'sysrr.bpf.c': 'The recorder\'s kernel half: eBPF programs and maps.', 'sysrr.c': 'The recorder\'s user half: loader and file writer.', 'sysrr.h': 'The log format, shared by every tool.', 'sysrr_dump.c': 'Prints and checks a log.', 'sysrr_replay.c': 'The replayer.', 'sysrr_search.sh': 'The order search.', 'podman_pid.h': 'Container name to pid, for -C.', 'sysrr_restore.sh': 'Restores a checkpoint left stopped.', 'tests/': 'The test suite.' };
     return order.map(function (f) { return G(f, DESC[f] || '', files[f].slice().sort(function (a, b) { return a[3] - b[3]; })); });
   }
 

@@ -370,7 +370,7 @@ td a code, td code { white-space: nowrap; }
       <tr><td>A server with several processes, each with several threads</td><td><span class="pill ok">replays with a search</span></td><td>Apache httpd, 2 processes with a listener thread and workers each, 8 clients: 3 of 3 runs served every request with the same thread of the same process as live, each after a search that changed 1 or 2 guesses.</td></tr>
       <tr><td>Clients racing for the same key on a threaded server</td><td><span class="pill mid">sometimes</span></td><td>memcached with shared keys: 1 of 3 runs with two clients, none with four</td></tr>
       <tr><td>Python threads</td><td><span class="pill no">reported</span></td><td>The interpreter's lock changes hands on a timer. Replay follows for a few dozen calls, then reports that it lost track.</td></tr>
-      <tr><td>Signals from a timer or from another program</td><td><span class="pill ok">replays</span></td><td>A timer firing 30 times a second, and signals sent with <code>podman kill</code>. Each one comes back at the syscall it interrupted. One that landed in the middle of a computation comes back slightly early.</td></tr>
+      <tr><td>Signals from a timer or from another program</td><td><span class="pill ok">replays</span></td><td>A timer firing 30 times a second, and signals sent with <code>podman kill</code>. Each one comes back at the syscall it interrupted. One that landed while the photo was being taken comes back at the exact instruction. One that landed in the middle of a computation comes back slightly early.</td></tr>
       <tr><td>Time and random numbers that never enter the kernel</td><td><span class="pill no">not seen</span></td><td><code>time()</code>, and glibc's <code>getrandom()</code> on new systems. Reading the clock with <code>clock_gettime</code> works after one setting (below).</td></tr>
     </tbody>
   </table></div>
@@ -430,24 +430,19 @@ td a code, td code { white-space: nowrap; }
   <p>Build once with <code>make</code> in <code>syscall-rr/</code>. You need root on both machines. The code is at <a href="https://github.com/wlog106/sysrr">github.com/wlog106/sysrr</a>.</p>
   <pre><span class="dim"># machine A: make clock reads visible, then record</span>
 echo acpi_pm | sudo tee /sys/devices/system/clocksource/clocksource0/current_clocksource
-PID=$(sudo podman inspect -f '{{.State.Pid}}' CTR)
-sudo ./sysrr -p $PID -o rec.log            <span class="dim"># add -f if the program starts child processes</span>
+sudo ./sysrr -C CTR -o rec.log             <span class="dim"># the whole container; -p PID for one process</span>
 
 <span class="dim"># machine A, another terminal: take the photo, the program keeps running</span>
 sudo podman container checkpoint --leave-running -e ckpt.tar.gz CTR
 
-<span class="dim"># ... wait for the failure, then Ctrl-C in the sysrr terminal ...</span>
+<span class="dim"># ... wait for the failure, then Ctrl-C (it also stops when the program ends) ...</span>
 ./sysrr_dump -s rec.log                    <span class="dim"># is the log complete?</span>
 
-<span class="dim"># machine B: bring the copy back, frozen</span>
-echo acpi_pm | sudo tee /sys/devices/system/clocksource/clocksource0/current_clocksource
-sudo mkdir -p /etc/criu
-echo leave-stopped | sudo tee /etc/criu/default.conf
-sudo podman container restore --import ckpt.tar.gz --name NEW
-sudo rm /etc/criu/default.conf
+<span class="dim"># machine B: bring the copy back, frozen (also sets the clock source)</span>
+sudo ./sysrr_restore.sh ckpt.tar.gz NEW
 
 <span class="dim"># machine B: replay generation 1</span>
-sudo ./sysrr_replay -p $(sudo podman inspect -f '{{.State.Pid}}' NEW) -g 1 -T rec.log</pre>
+sudo ./sysrr_replay -C NEW -g 1 -T rec.log</pre>
   <div class="tablewrap"><table>
     <thead><tr><th>Option</th><th>When to use it</th></tr></thead>
     <tbody>
@@ -502,7 +497,7 @@ sudo ./sysrr_replay -p $(sudo podman inspect -f '{{.State.Pid}}' NEW) -g 1 -T re
     journey: [
       { on: ['prog'], h: 'A program runs in a container', p: 'It is whatever you want to study: a server, a script, a test.',
         k: [['tests/run_all.sh', 1, 'tests/run_all.sh', 'The suite\'s programs (targets) live in ' + C('tests/') + '. This script runs each one through all six steps.']] },
-      { on: ['prog', 'sysrr', 'log'], h: 'Start the recorder', p: 'sysrr attaches to the program from outside. From now on every syscall the program makes, with the data that came back, is added to rec.log.', c: 'sudo ./sysrr -p PID -o rec.log',
+      { on: ['prog', 'sysrr', 'log'], h: 'Start the recorder', p: 'sysrr attaches to the program from outside. From now on every syscall the program makes, with the data that came back, is added to rec.log.', c: 'sudo ./sysrr -C CTR -o rec.log',
         k: [[S, 189, 'main → sysrr_bpf__open', 'Loads the eBPF half of the recorder into the kernel.'],
             [S, 212, 'targets map', 'Puts the program\'s PID in the ' + C('targets') + ' map. The hooks ignore every process not in it.'],
             [S, 251, 'sysrr_bpf__attach', 'Turns the hooks on. Recording starts here.']] },
@@ -512,9 +507,9 @@ sudo ./sysrr_replay -p $(sudo podman inspect -f '{{.State.Pid}}' NEW) -g 1 -T re
       { on: ['prog', 'sysrr', 'log'], h: 'Keep recording until it goes wrong', p: 'Minutes or hours later the program fails. Stop the recorder. The log now holds everything the program was told between the photo and the failure.',
         k: [[S, 265, 'ring_buffer__poll loop', 'Every 10 ms, moves new records from the kernel to the file. Ctrl-C ends the loop.'],
             [D, 234, 'sysrr_dump main', 'With ' + C('-s') + ', counts the records of each generation and checks that none were lost.']] },
-      { on: ['ckpt', 'copy'], h: 'Restore a copy, frozen', p: 'On machine B, CRIU rebuilds the program from the photo: the same memory, the same threads, even the same process numbers. It is left stopped, so it cannot make a single syscall yet.', c: 'sudo podman container restore --import ckpt.tar.gz --name NEW',
+      { on: ['ckpt', 'copy'], h: 'Restore a copy, frozen', p: 'On machine B, CRIU rebuilds the program from the photo: the same memory, the same threads, even the same process numbers. It is left stopped, so it cannot make a single syscall yet.', c: 'sudo ./sysrr_restore.sh ckpt.tar.gz NEW',
         k: [[P, 1008, 'snapshot_maps', 'sysrr\'s own code starts after the restore: the replayer first notes the copy\'s memory map, to name addresses in its reports.']] },
-      { on: ['log', 'copy', 'replay'], h: 'Replay', p: 'sysrr_replay takes over the copy\'s syscalls and lets it run. Each call is answered from the log. The copy computes what the original computed, and fails where the original failed. You can do this as many times as you like.', c: 'sudo ./sysrr_replay -p PID2 -g 1 -T rec.log',
+      { on: ['log', 'copy', 'replay'], h: 'Replay', p: 'sysrr_replay takes over the copy\'s syscalls and lets it run. Each call is answered from the log. The copy computes what the original computed, and fails where the original failed. You can do this as many times as you like.', c: 'sudo ./sysrr_replay -C NEW -g 1 -T rec.log',
         k: [[P, 3187, 'main → load', 'Reads generation 1 of the log.'],
             [P, 3262, 'main → attach_listener', 'Takes over the frozen copy\'s syscalls.'],
             [P, 3305, 'main → supervise', 'Answers them one at a time until the log runs out.']] }
