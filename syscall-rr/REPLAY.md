@@ -8,6 +8,8 @@ https://claude.ai/artifact/BrqbnVeMN3qqisG1nxenKb (publish the same file
 path to update it; from another conversation pass that URL). Keep this
 file current when the replay changes.
 
+Status (2026-11-20): compared with Gemini's crr (section below), took -C and
+sysrr_restore.sh, checkpoint-signal delivery, code review fixes; suite 30 tests.
 Status (2026-11-12): 11 more targets added to the suite (25 tests); they found
 the bugs listed under "More targets (2026-11-12)". `-T` changed a lot: read that
 section before touching it.
@@ -402,7 +404,14 @@ them from the REC_SIGNAL records; `-v` prints each delivery.
   recorded rip/rsp with the restored thread's registers; equal and not blocked:
   tgkill now, while the thread is stopped, so the copy runs the handler from the
   same instruction. Before, it went out at the first syscall, after the thread had
-  computed on. Test `sig-ckpt` (tests/sigckpt_target.c; CKPT_KICK=USR1 sends the
+  computed on. A rip/rsp match alone is not proof in a tight loop (the thread
+  passes that instruction again and again), so the signal must also have reached
+  the thread within 2 ms of CRIU's PTRACE_DETACH of it (M_DETACH marker,
+  `landed_in_freeze`). After a signal sent this way the thread runs its handler,
+  so at the first notification SigBlk no longer means "restored inside its
+  handler": the remaining leading signals are all delivered (code review find:
+  a second SIGUSR1 held during the first handler was dropped).
+  Test `sig-ckpt` (tests/sigckpt_target.c; CKPT_KICK=USR1 sends the
   signal from a CRIU action script at post-dump, tests/ckpt_kick.sh): the old
   replayer diverges at the first write ("signals 0" instead of "signals 1:
   74042352"), the new one is exact. Other leading signals still go out at the
@@ -576,6 +585,40 @@ claude-dev, restore and replay on claude-test, crr with its own harness
   The one real difference: crr sends leading signals before resuming the copy.
   Adopted where it is exact (see "Signals from the log", checkpoint signals).
 
+## Code review and fixes (2026-11-20, evening)
+
+A code review (code-review skill, high) of the day's work plus my own reading.
+Fixed:
+* **Recorder, follow mode (-f and -C): processes after the 4096th went
+  unrecorded, silently.** `targets` gained every forked process and never lost
+  one (max 4096 entries); a container that ran /bin/true 6000 times had 4094
+  execve in its log and `lost=0`. Now on_exit deletes a process when its last
+  thread ends (`p->signal->live` is 0 at sched_process_exit), a failed insert
+  counts as lost (so the "records were lost" warning shows), and in follow mode
+  sysrr stops by itself once every recorded process has ended. After: 6001 of
+  6001, stopped by itself.
+* sysrr: a failed write (disk full) or a failed final fclose (the last 4 MiB) no
+  longer exits 0: exit 3 and "ERROR: writing ... failed". -b is checked (power of
+  two, 1..4096). Exit statuses in the usage text.
+* sysrr_dump: a record whose length is shorter than its type's struct (or over
+  64 MiB, or a data record claiming more bytes than it holds) is reported as a
+  broken log instead of read past its end; the header copy no longer happens
+  before the length check; log version checked.
+* Checkpoint signals: the two fixes above (2 ms window; no SigBlk skip after a
+  checkpoint delivery); "later than live" counted only when delivered.
+* test_replay.sh CKPT_KICK: the record machine's CRIU config is backed up to
+  /run/sysrr-kick.criu.conf (not $OUT, which the next run empties) and
+  put_back_rec_conf is defined for every run, so an interrupted run is repaired
+  by the next one instead of breaking its cleanup.
+* sigckpt_target: SIGUSR1 is blocked while the round's signals are taken and the
+  count reset (a signal landing then was lost, and the test passed vacuously).
+Not fixed (noted): a signal pending at the checkpoint whose handler has
+SA_NODEFER is not in SigBlk inside its handler, so the first notification would
+deliver it a second time; docs/code-tree.html still lists 29 tests and the line
+numbers of commit 77c5a0d (its links point at that commit, so they still land).
+Suite after the fixes: 30 of 30 (with the recorder fix), signal tests 2 of 2 each
+after the replay fixes.
+
 ## Replay limitations (tell the user when relevant)
 
 * CONTINUE'd syscalls: their return value can't be checked (seccomp never
@@ -612,7 +655,9 @@ claude-dev, restore and replay on claude-test, crr with its own harness
 * `time()` and the `*_COARSE` clocks come from the vDSO data page even with
   acpi_pm: not recorded, the replay sees the real time.
 * Signals: see "Signals from the log". Left: SIGCHLD timing, signals that land
-  in the middle of a computation (delivered early), original siginfo.
+  in the middle of a computation (delivered early; exact would need a branch
+  counter, and this VM has no PMU), original siginfo, a pending signal with an
+  SA_NODEFER handler at the checkpoint (delivered twice).
 * A file received over a socket (SCM_RIGHTS): only the number is recorded, the
   stand-in is /dev/null, a real mmap of it fails (sc_known.txt).
 * semctl(GETALL): output not recorded (sc_known.txt).

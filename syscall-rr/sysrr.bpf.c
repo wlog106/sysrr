@@ -839,12 +839,18 @@ int BPF_PROG(on_signal, int sig, struct kernel_siginfo *info, struct k_sigaction
 SEC("tp_btf/sched_process_exit")
 int BPF_PROG(on_exit, struct task_struct *p)
 {
+	u32 tgid = p->tgid;
+
+	if (!is_target(tgid) || (u32)bpf_get_current_pid_tgid() != p->pid)
+		return 0;
 	/* only the last word of a process that ended abnormally, or its leader */
-	if (!is_target(p->tgid) || (u32)bpf_get_current_pid_tgid() != p->pid)
-		return 0;
-	if (p->pid != p->tgid && !(p->exit_code & 0x7f))
-		return 0;
-	emit_signal(SIG_EXIT, p->exit_code, !!(p->exit_code & 0x7f), 0, 0);
+	if (p->pid == p->tgid || (p->exit_code & 0x7f))
+		emit_signal(SIG_EXIT, p->exit_code, !!(p->exit_code & 0x7f), 0, 0);
+	/* the process's last thread (signal->live has just dropped): forget the
+	 * process, or the map fills up after that many processes and new ones go
+	 * unrecorded; a later process with the same pid is not a descendant */
+	if (follow && p->signal->live.counter == 0)
+		bpf_map_delete_elem(&targets, &tgid);
 	return 0;
 }
 
@@ -857,7 +863,8 @@ int BPF_PROG(on_fork, struct task_struct *parent, struct task_struct *child)
 
 	if (!follow || ptgid == ctgid)
 		return 0;
-	if (bpf_map_lookup_elem(&targets, &ptgid))
-		bpf_map_update_elem(&targets, &ctgid, &one, BPF_ANY);
+	if (bpf_map_lookup_elem(&targets, &ptgid) &&
+	    bpf_map_update_elem(&targets, &ctgid, &one, BPF_ANY))
+		count_lost();           /* map full: this process goes unrecorded */
 	return 0;
 }

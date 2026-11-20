@@ -21,6 +21,7 @@
 #include "podman_pid.h"
 
 static volatile sig_atomic_t stop;
+static int write_failed;
 static FILE *out;
 static struct rec_stats stats = { .h = { .type = REC_STATS, .len = sizeof(struct rec_stats) } };
 
@@ -48,7 +49,7 @@ static int handle_rec(void *ctx, void *data, size_t sz)
 	}
 	if (fwrite(data, h->len, 1, out) != 1) {
 		perror("write");
-		stop = 1;
+		write_failed = stop = 1;
 		return -1;
 	}
 	stats.bytes_written += h->len;
@@ -161,7 +162,9 @@ static void usage(const char *p)
 		"  -t       count any ptrace attach (gdb, strace) as a checkpoint, not\n"
 		"           only criu's; for a criu binary renamed or wrapped\n"
 		"  -o FILE  output log (default sysrr.log)\n"
-		"  -b MB    ring buffer size in MiB, power of two (default 64)\n", p);
+		"  -b MB    ring buffer size in MiB, power of two (default 64)\n"
+		"Stops on Ctrl-C, or by itself when the recorded processes have ended.\n"
+		"Exit status: 0 complete, 2 records were lost, 3 the log could not be written.\n", p);
 	exit(1);
 }
 
@@ -188,6 +191,11 @@ int main(int argc, char **argv)
 	}
 	if (pid <= 0)
 		usage(argv[0]);
+	if (ring_mb <= 0 || ring_mb > 4096 || (ring_mb & (ring_mb - 1))) {
+		fprintf(stderr, "-b %d: the ring buffer size must be a power of two, 1 to 4096 MiB\n",
+			ring_mb);
+		return 1;
+	}
 
 	char nspath[64];
 	struct stat nsst;
@@ -252,7 +260,10 @@ int main(int argc, char **argv)
 			fh.comm[strcspn(fh.comm, "\n")] = 0;
 		fclose(cf);
 	}
-	fwrite(&fh, sizeof(fh), 1, out);
+	if (fwrite(&fh, sizeof(fh), 1, out) != 1) {
+		perror(outpath);
+		return 1;
+	}
 
 	struct ring_buffer *rb = ring_buffer__new(bpf_map__fd(skel->maps.events),
 						  handle_rec, NULL, NULL);
@@ -279,7 +290,12 @@ int main(int argc, char **argv)
 			fprintf(stderr, "poll: %d\n", err);
 			break;
 		}
-		if (kill(pid, 0) && errno == ESRCH && !follow)
+		if (!follow && kill(pid, 0) && errno == ESRCH)
+			stop = 1;
+		/* follow: every recorded process has ended (on_exit forgets them) */
+		__u32 k;
+		if (follow && bpf_map_get_next_key(bpf_map__fd(skel->maps.targets), NULL, &k) &&
+		    errno == ENOENT)
 			stop = 1;
 	}
 	sysrr_bpf__detach(skel);
@@ -293,8 +309,11 @@ int main(int argc, char **argv)
 		for (int i = 0; i < ncpu; i++)
 			stats.lost += vals[i];
 	stats.bytes_written += sizeof(stats);
-	fwrite(&stats, sizeof(stats), 1, out);
-	fclose(out);
+	/* the last 4 MiB of buffered records reach the file only here */
+	if (fwrite(&stats, sizeof(stats), 1, out) != 1 || fclose(out)) {
+		perror(outpath);
+		write_failed = 1;
+	}
 
 	fprintf(stderr, "syscalls=%llu data_records=%llu data_bytes=%llu lost=%llu "
 		"generations=%u file=%.1f MiB\n",
@@ -304,8 +323,10 @@ int main(int argc, char **argv)
 	if (stats.lost)
 		fprintf(stderr, "WARNING: records were lost, this log cannot be replayed reliably "
 			"(try a bigger -b)\n");
+	if (write_failed)
+		fprintf(stderr, "ERROR: writing %s failed: the log is incomplete\n", outpath);
 
 	ring_buffer__free(rb);
 	sysrr_bpf__destroy(skel);
-	return stats.lost ? 2 : 0;
+	return write_failed ? 3 : stats.lost ? 2 : 0;
 }

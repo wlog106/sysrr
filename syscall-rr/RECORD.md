@@ -203,3 +203,13 @@ the copy of write() input at sys_enter (98 vs 62 ns per sys_enter); crr does
 not record it and cannot check writes.  Measure a program's own cost with
 `sysctl kernel.bpf_stats_enabled=1` and `bpftool prog show` (run_time_ns /
 run_cnt).
+
+## Follow mode forgets ended processes (2026-11-20)
+
+`targets` (hash, 4096) used to keep every process ever forked: after 4096
+processes, new ones were not added and went unrecorded with `lost=0`.  on_exit
+now deletes the process at its last thread's exit (`p->signal->live.counter ==
+0`; do_exit decrements live before trace_sched_process_exit), on_fork counts a
+failed insert as lost, and the user side stops when the map is empty (every
+recorded process has ended).  sysrr exits 3 when the log could not be written
+(fwrite or the final fclose), 2 when records were lost.

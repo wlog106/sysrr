@@ -75,7 +75,8 @@ sudo podman container checkpoint --leave-running -e ckpt.tar.gz CTR
 ```
 
 Let the container run as long as you want to record, then press Ctrl-C to stop
-`sysrr`. Everything recorded after checkpoint N is "generation N", and that's
+`sysrr` (it also stops by itself when the recorded processes have ended; exit
+status 2 means records were lost, 3 that the log could not be written). Everything recorded after checkpoint N is "generation N", and that's
 what a restore of checkpoint N needs.
 
 Check the log:
@@ -174,8 +175,10 @@ works). Rows whose binary is missing fail.
   a real syscall on both machines.
 - Signals are replayed: the ones a program sends itself, timer signals and
   signals sent from outside. A signal that interrupted a syscall comes back at
-  exactly that syscall. One that arrived in the middle of a computation comes
-  back at the thread's previous syscall, which is a little early. `SIGCHLD`
+  exactly that syscall, and so does one that landed while the checkpoint was
+  being taken (at the exact instruction). One that arrived in the middle of a
+  computation comes back at the thread's previous syscall, which is a little
+  early. `SIGCHLD`
   from child processes still arrives at its own time.
 - Threads that take the same lock within a few hundred nanoseconds of each
   other can't always be put back in order: the log only has syscalls. `-T`

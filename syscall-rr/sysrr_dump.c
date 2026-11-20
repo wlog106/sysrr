@@ -259,6 +259,10 @@ int main(int argc, char **argv)
 		fprintf(stderr, "not a sysrr log\n");
 		return 1;
 	}
+	if (fh.version != SYSRR_VERSION) {
+		fprintf(stderr, "log format version %u, this tool reads %u\n", fh.version, SYSRR_VERSION);
+		return 1;
+	}
 	printf("# target pid %u (ns pid %u, %s)%s%s, kernel %s\n", fh.target_tgid,
 	       fh.target_ns_tgid, fh.comm, fh.follow ? " +children" : "",
 	       fh.opts & OPT_RACECHECK ? " +race-check" : "", fh.kernel);
@@ -267,11 +271,33 @@ int main(int argc, char **argv)
 	printf("# columns: seq gen ns_tid/host_tid seconds syscall(args) = ret\n");
 
 	while (fread(&h, sizeof(h), 1, f) == 1) {
+		/* a record shorter than its type's struct, or absurdly long, is a broken log */
+		size_t need = h.type == REC_SYSCALL ? sizeof(struct rec_syscall) :
+			      h.type == REC_DATA ? sizeof(struct rec_data) :
+			      h.type == REC_MARKER ? sizeof(struct rec_marker) :
+			      h.type == REC_SIGNAL ? sizeof(struct rec_signal) :
+			      h.type == REC_STATS ? sizeof(struct rec_stats) : sizeof(h);
+		if (h.len < need || h.len > (64u << 20)) {
+			fprintf(stderr, "broken record (type %u, length %u)\n", h.type, h.len);
+			problems++;
+			break;
+		}
 		char *buf = malloc(h.len);
+		if (!buf) {
+			perror("malloc");
+			return 1;
+		}
 		memcpy(buf, &h, sizeof(h));
-		if (h.len < sizeof(h) || fread(buf + sizeof(h), h.len - sizeof(h), 1, f) != 1) {
+		if (fread(buf + sizeof(h), h.len - sizeof(h), 1, f) != 1) {
 			fprintf(stderr, "truncated record\n");
 			free(buf);
+			break;
+		}
+		if (h.type == REC_DATA && sizeof(struct rec_data) + ((struct rec_data *)buf)->len > h.len) {
+			fprintf(stderr, "broken data record (%u bytes claimed in %u)\n",
+				((struct rec_data *)buf)->len, h.len);
+			free(buf);
+			problems++;
 			break;
 		}
 		switch (h.type) {

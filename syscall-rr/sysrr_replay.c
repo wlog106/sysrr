@@ -306,6 +306,7 @@ struct thr {                        /* one recorded thread */
 	u32 hw_tgid;
 	const struct rec_signal *startsig[4];  /* signals it got before its first call */
 	int nstart;
+	u64 ckpt_sigs;              /* of those, sent at the checkpoint (signals_at_checkpoint) */
 	pid_t start_tid;            /* -T: held in a ptrace stop until its turn to start */
 	u64 start_key;              /* ... which is when it made its first syscall */
 };
@@ -355,6 +356,22 @@ static struct thr *thr_of(u32 ns_tid)
 static int is_restart_ret(s64 r) { return r <= -512 && r >= -516; }
 
 static const struct sysrr_file_hdr *fh;
+
+/* when CRIU let each thread go (host tid, M_DETACH markers of the log) */
+static struct { u32 tid; u64 ts; } *detached;
+static size_t ndetached;
+
+/* did the signal reach its thread just as CRIU let it go (it had landed while
+ * the process was frozen)?  The kernel delivers such a signal on the thread's
+ * first way back to user space, within microseconds. */
+static int landed_in_freeze(const struct rec_signal *g)
+{
+	u64 best = 0;
+	for (size_t i = 0; i < ndetached; i++)
+		if (detached[i].tid == g->tid && detached[i].ts <= g->ts && detached[i].ts > best)
+			best = detached[i].ts;
+	return best && g->ts - best < 2000000;      /* 2 ms */
+}
 
 /* the live run's signals in this generation */
 static const struct rec_signal **sigs;
@@ -457,6 +474,13 @@ static void load(const char *path, int *gen)
 			if (h->len < sizeof(*h) || p + h->len > end)
 				break;
 			p += h->len;
+			if (pass == 1 && h->type == REC_MARKER && h->len >= sizeof(struct rec_marker) &&
+			    ((const struct rec_marker *)h)->kind == M_DETACH) {
+				const struct rec_marker *m = (const void *)h;
+				detached = realloc(detached, (ndetached + 1) * sizeof(*detached));
+				detached[ndetached].tid = m->tid;
+				detached[ndetached++].ts = m->ts;
+			}
 			if (pass == 1 && h->type == REC_SIGNAL && h->len >= sizeof(struct rec_signal) &&
 			    (int)((const struct rec_signal *)h)->gen == *gen) {
 				sigs = realloc(sigs, (nsigs + 1) * sizeof(*sigs));
@@ -2595,17 +2619,22 @@ static int handle(struct seccomp_notif *req)
 		 * signal is blocked).  Only the others are ours to deliver. */
 		const struct rec_signal *g[4];
 		int n = 0;
+		/* (A signal sent at the checkpoint has its handler running now, which
+		 * blocks its own and sa_mask's signals: that says nothing about the
+		 * image, so after one, every remaining signal is ours.) */
+		int late = 0;
 		for (int i = 0; i < t->nstart; i++)
-			if (sig_in_mask(req->pid, "SigBlk:", t->startsig[i]->sig))
+			if (!t->ckpt_sigs && sig_in_mask(req->pid, "SigBlk:", t->startsig[i]->sig))
 				n_sigdone++;
 			else
 				g[n++] = t->startsig[i];
 		t->nstart = 0;
 		for (int i = 0; i < n; i++)     /* landed while it computed: later than live */
-			if (g[i]->rip != req->data.instruction_pointer)
-				n_siglate++;
-		if (n && signals_then_again(req, -513, g, n) == 0)
+			late += g[i]->rip != req->data.instruction_pointer;
+		if (n && signals_then_again(req, -513, g, n) == 0) {
+			n_siglate += late;
 			return 1;
+		}
 	}
 	/* a recorded signal interrupted this very call: the same here */
 	for (size_t j = t->pos; j < t->n && t->q[j]->done; j++) {
@@ -3191,10 +3220,11 @@ static void signals_at_checkpoint(void)
 			if (ptrace(PTRACE_GETREGS, tid, 0, &regs) == 0)
 				for (int k = 0; k < t->nstart; k++) {
 					const struct rec_signal *g = t->startsig[k];
-					if (g->rip == regs.rip && g->rsp == regs.rsp &&
+					if (g->rip == regs.rip && g->rsp == regs.rsp && landed_in_freeze(g) &&
 					    !sig_in_mask(tid, "SigBlk:", g->sig) &&
 					    syscall(SYS_tgkill, procs[i].tgid, tid, g->sig) == 0) {
 						n_sigdone++, n_sigckpt++;
+						t->ckpt_sigs |= 1ULL << (g->sig - 1);
 						if (opt_verbose)
 							printf("         %-5u signal %d (%s) delivered at the "
 							       "checkpoint, where it landed live\n",

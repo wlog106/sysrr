@@ -98,6 +98,13 @@ RESTORE_CONF="if [ -e '$OUT/criu.conf.bak' ]; then sudo cp '$OUT/criu.conf.bak' 
 [ -z "$REMOTE" ] || $SSH "$REMOTE" "mkdir -p '$DIR'"
 old_cs=$(cat $CS)
 r_old_cs=$(R "cat $CS")
+# CKPT_KICK: put this machine's CRIU config back (also after an interrupted run)
+KICK_BAK=/run/sysrr-kick.criu.conf
+put_back_rec_conf() {
+	if [ -e $KICK_BAK ]; then sudo cp -p $KICK_BAK $CONF; else sudo rm -f $CONF; fi
+	sudo rm -f /run/sysrr-kick $KICK_BAK
+}
+[ ! -e /run/sysrr-kick ] || put_back_rec_conf     # left by an interrupted run
 cleanup() {
 	[ ! -e /run/sysrr-kick ] || put_back_rec_conf     # interrupted during a CKPT_KICK checkpoint
 	echo "$old_cs" | sudo tee $CS >/dev/null
@@ -126,18 +133,16 @@ case " $SYSRR_OPTS " in
 esac
 sleep 2
 if [ -n "$CKPT_KICK" ]; then
-	# the hook goes into this machine's CRIU config for the checkpoint only
-	sudo rm -f "$OUT/rec-criu.conf.bak"
-	[ -e $CONF ] && sudo cp -p $CONF "$OUT/rec-criu.conf.bak"
+	# the hook goes into this machine's CRIU config for the checkpoint only;
+	# the original is kept next to /run/sysrr-kick (not in $OUT, which the next
+	# run empties), so an interrupted run can still put it back
+	sudo rm -f $KICK_BAK
+	[ -e $CONF ] && sudo cp -p $CONF $KICK_BAK
 	sudo mkdir -p /etc/criu
-	{ [ -e "$OUT/rec-criu.conf.bak" ] && cat "$OUT/rec-criu.conf.bak"; echo "action-script $DIR/ckpt_kick.sh"; } |
+	{ [ -e $KICK_BAK ] && cat $KICK_BAK; echo "action-script $DIR/ckpt_kick.sh"; } |
 		sudo tee $CONF.new >/dev/null
 	sudo mv $CONF.new $CONF
 	echo "$PID $CKPT_KICK" | sudo tee /run/sysrr-kick >/dev/null
-	put_back_rec_conf() {
-		if [ -e "$OUT/rec-criu.conf.bak" ]; then sudo cp -p "$OUT/rec-criu.conf.bak" $CONF; else sudo rm -f $CONF; fi
-		sudo rm -f /run/sysrr-kick "$OUT/rec-criu.conf.bak"
-	}
 fi
 ckpt_rc=0
 sudo podman container checkpoint --leave-running $CKPT_OPTS -e "$OUT/ckpt.tar.gz" $SRC >/dev/null || ckpt_rc=$?
