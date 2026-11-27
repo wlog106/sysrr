@@ -289,6 +289,34 @@ rect.b-prog, rect.b-kern, rect.b-tool, rect.b-ext, rect.b-file { stroke-width: 1
 .lim .lt2.k { color: var(--kernel); } .lim .lt2.p { color: var(--prog); } .lim .lt2.t { color: var(--tool); }
 .lim b { font: 600 16px var(--f-display); }
 .lim span { font-size: 14px; color: var(--muted); line-height: 1.4; }
+/* flowcharts */
+.flow .fx { transition: opacity .3s; }
+.flow.has-path .fx:not(.on), .flow.has-path .fe:not(.on), .flow.has-path .fl:not(.on) { opacity: .3; }
+.flow .fe { fill: none; stroke: var(--line-strong); stroke-width: 1.6; marker-end: url(#ah); transition: opacity .3s; }
+.flow .fe.on { stroke: var(--tool); stroke-width: 2.6; marker-end: url(#ah-hot); }
+.flow .fl { font: 600 11px var(--f-mono); fill: var(--muted); }
+.flow .fl.on { fill: var(--tool); }
+.flow .fs { stroke-width: 1.5; }
+.flow .fx.on .fs { stroke-width: 2.8; }
+.flow .ft { font: 13px var(--f-body); fill: var(--ink); }
+.f-start { fill: var(--prog-soft); stroke: var(--prog); }
+.f-dec { fill: var(--surface); stroke: var(--ink); }
+.f-act { fill: var(--tool-soft); stroke: var(--tool); }
+.f-term { fill: var(--ext-soft); stroke: var(--ext); }
+.f-good { fill: var(--good-soft); stroke: var(--good); }
+.f-bad { fill: var(--bad-soft); stroke: var(--bad); }
+.fhead { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 14px; }
+.fkey { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; color: var(--muted); }
+.fkey i { display: inline-block; width: 16px; height: 10px; vertical-align: -1px; margin-right: 5px; border: 1.5px solid; border-radius: 3px; }
+.fkey .kd i { border-color: var(--ink); transform: skewX(-20deg); }
+.fkey .ka i { background: var(--tool-soft); border-color: var(--tool); }
+.fkey .kg i { background: var(--good-soft); border-color: var(--good); border-radius: 6px; }
+.fkey .kb i { background: var(--bad-soft); border-color: var(--bad); border-radius: 6px; }
+.chk.bad2 { fill: var(--bad); }
+.pill.div { background: var(--bad); } .pill.hold { background: var(--ext); }
+.sigdesc { font-size: 15px; min-height: 1.6em; }
+.sigdesc b { font-family: var(--f-display); font-size: 16px; }
+
 footer { border-top: 1px solid var(--line); padding-block: 28px 56px; color: var(--muted); font-size: 14px; display: flex; flex-wrap: wrap; gap: 8px 22px; }
 </style>
 </head>
@@ -449,6 +477,7 @@ footer { border-top: 1px solid var(--line); padding-block: 28px 56px; color: var
   <div class="stage">
     <div class="head"><h3>Is anything missing?</h3><span class="lede" style="font-size:15px">Every syscall takes the next seq, so holes are visible. Each SYSCALL record says how many DATA records it expects.</span></div>
     <div class="controls"><div class="seg" id="lostSeg"><button aria-pressed="true" data-l="0">ring keeps up</button><button aria-pressed="false" data-l="1">ring overflows</button></div></div>
+    <div class="svgbox"><svg id="fcLost" viewBox="0 0 960 165" role="img" aria-label="Flowchart of sysrr_dump -s: the kernel lost counter must be 0, every seq must be present or marked in flight, and each syscall must have all its DATA records with no LOST flag; any no leads to WARNING, log is incomplete."></svg></div>
     <div class="strip" id="lostStrip"></div>
     <pre class="term" id="lostTerm"></pre>
   </div>
@@ -477,6 +506,12 @@ footer { border-top: 1px solid var(--line); padding-block: 28px 56px; color: var
     <div class="controls"><button class="btn" data-prev>← Back</button><div class="dots" data-dots></div><button class="btn primary" data-next>Next →</button><span class="stepcount" data-count></span></div>
     <div class="cap" data-cap></div>
     <pre class="term" data-term></pre>
+    <div class="fhead"><h3>What the recorder does with every ptrace call</h3><span class="note">follows the steps above</span></div>
+    <div class="svgbox"><svg id="fcGen" viewBox="0 0 960 430" role="img" aria-label="Flowchart: a ptrace call counts only if it is SEIZE, ATTACH or DETACH, made by a process named criu, aimed at a recorded thread. SEIZE increments the seized count and flags the thread's syscalls F_DUMP. DETACH decrements it and starts that thread at gen plus 1; when the last thread is let go, gen increments and an M_GEN marker is written."></svg></div>
+  </div>
+  <div class="stage">
+    <div class="fhead"><h3>The syscall in flight at the checkpoint</h3><span class="note">why generation N starts exactly where the restored copy starts</span></div>
+    <div class="svgbox"><svg id="fcInflight" viewBox="0 0 960 150" role="img" aria-label="Flowchart: a thread blocked in a syscall when CRIU froze it gets a restart code. With -512 or -513, CRIU rewinds the registers and both the live process and the copy run the call again, as the first record of generation N. With -516, used by sleeps, CRIU saves -EINTR, and both go on to the next call, which is the first of generation N."></svg></div>
   </div>
 </section>
 
@@ -530,6 +565,9 @@ footer { border-top: 1px solid var(--line); padding-block: 28px 56px; color: var
       <g data-k="e-rr"><path class="edge" d="M580,192 H648"/></g>
     </svg>
     </div>
+    <div class="fhead"><h3>The decision, step by step</h3><div class="fkey"><span class="kd"><i></i>question</span><span class="ka"><i></i>sysrr_replay acts</span><span class="kg"><i></i>outcome</span><span class="kb"><i></i>divergence</span></div></div>
+    <div class="svgbox"><svg id="fcReplay" viewBox="0 0 960 700" role="img" aria-label="Flowchart of how sysrr_replay handles one notification: hold it if the thread has no records, park it until its turn under -S or -T, report a divergence if the syscall, fd arguments or input bytes differ, otherwise run calls that change the process for real (pinning new mappings and threads) and fake the rest from the log, installing fds when the call created them."></svg></div>
+    <span class="note">* Timing-only calls (futex, sleeps, rt_sigreturn, the monotonic clock) may differ: an extra or missing one is tolerated and counted.</span>
   </div>
 </section>
 
@@ -571,20 +609,19 @@ footer { border-top: 1px solid var(--line); padding-block: 28px 56px; color: var
       <div class="tbox"><span class="lab">writes vs. log</span><div id="thWrites"></div></div>
     </div>
     <pre class="term" id="thTerm"></pre>
+    <div class="fhead"><h3>How sysrr_search.sh looks for an order</h3><span class="note">lights up while the search runs</span></div>
+    <div class="svgbox"><svg id="fcSearch" viewBox="0 0 960 510" role="img" aria-label="Flowchart of sysrr_search.sh: replay with -T and the flips kept so far; if the end of the log is reached, print FOUND. Otherwise, while replays are left, try an untried single flip among the suspects, or else an untried pair of the six strongest; restore and replay with it; keep the flip if the replay got past the old divergence, otherwise drop it. When nothing is left, print BEST."></svg></div>
   </div>
 </section>
 
 <!-- 9 SIGNALS -->
 <section class="scene" id="signals" data-title="Signals">
   <div class="head"><span class="eyebrow">09 · signals</span><h2>Signals: replayed or happen again?</h2>
-    <p class="lede">Only signals the copy cannot produce by itself come from the log. Click one to sort it.</p></div>
+    <p class="lede">Only signals the copy cannot produce by itself come from the log. Click one to follow its path.</p></div>
   <div class="stage">
     <div class="sigs" id="sigs"></div>
-    <div class="bins">
-      <div class="bin" id="bin-log"><span class="tagl">from the log</span><h4>sysrr_replay sends it</h4><div class="what"></div></div>
-      <div class="bin" id="bin-again"><span class="tagl">by itself</span><h4>The copy causes it again</h4><div class="what"></div></div>
-      <div class="bin" id="bin-end"><span class="tagl">at the end</span><h4>Delivered when the log runs out</h4><div class="what"></div></div>
-    </div>
+    <div class="sigdesc" id="sigDesc"></div>
+    <div class="svgbox"><svg id="fcSig" viewBox="0 0 960 500" role="img" aria-label="Flowchart for a signal: if the copy caused it itself it happens again by itself; if it killed the process it is delivered at the end of the recording; if it landed during the checkpoint freeze it is sent before the copy resumes; if the thread's last syscall is not made in the replay it is sent before the next call with code -513; if it interrupted that syscall the restart code is set and it is sent; otherwise it is sent with the call's answer."></svg></div>
     <span class="note">Where a logged signal lands: at the thread's last syscall before it. One that arrived mid-computation comes back slightly early, because exact placement would need a CPU branch counter, which the test VMs lack. Measured: 71 of 71 timer signals, 8 of 8 outside signals at the right syscall.</span>
   </div>
 </section>
@@ -689,6 +726,188 @@ function focus(root, keys) {
     el.classList.toggle("hot", on);
   });
 }
+
+
+/* ---------- flowchart engine: nodes + orthogonal edges; show(path) lights a route ---------- */
+function flow(el, spec) {
+  var N = spec.nodes, nodeEls = {}, edgeEls = [];
+  el.classList.add("flow");
+  var eg = svg("g", {}, el), ng = svg("g", {}, el);
+  function anchor(n, side, over) {
+    if (side === "t") return [over != null ? over : n.x + n.w / 2, n.y];
+    if (side === "b") return [over != null ? over : n.x + n.w / 2, n.y + n.h];
+    if (side === "l") return [n.x, over != null ? over : n.y + n.h / 2];
+    return [n.x + n.w, over != null ? over : n.y + n.h / 2];
+  }
+  var vert = function (sd) { return sd === "t" || sd === "b"; };
+  Object.keys(N).forEach(function (id) {
+    var n = N[id], g = svg("g", { "class": "fx" }, ng), shp;
+    if (n.k === "dec") {
+      var c = 14;
+      shp = svg("polygon", { points: [[n.x, n.y + n.h / 2], [n.x + c, n.y], [n.x + n.w - c, n.y], [n.x + n.w, n.y + n.h / 2], [n.x + n.w - c, n.y + n.h], [n.x + c, n.y + n.h]].join(" ") }, g);
+    } else {
+      var round = n.k === "act" ? 7 : n.h / 2;
+      shp = svg("rect", { x: n.x, y: n.y, width: n.w, height: n.h, rx: round }, g);
+    }
+    shp.setAttribute("class", "fs f-" + n.k);
+    var lines = n.t.split("|");
+    lines.forEach(function (ln, i) {
+      var t = svg("text", { x: n.x + n.w / 2, y: n.y + n.h / 2 + (i - (lines.length - 1) / 2) * 16 + 4.5, "text-anchor": "middle", "class": "ft" }, g);
+      t.textContent = ln;
+      if (n.k === "bad" && i === 0 && /DIVERGENCE|WARNING/.test(ln)) t.style.fontWeight = 600;
+    });
+    nodeEls[id] = g;
+  });
+  spec.edges.forEach(function (e) {
+    var fs = e.fs || "b", ts = e.ts || "t";
+    var A = anchor(N[e.f], fs, e.sx), B = anchor(N[e.t], ts, e.tx), mid;
+    if (e.via) mid = e.via;
+    else if (A[0] === B[0] || A[1] === B[1]) mid = [];
+    else if (vert(fs) && vert(ts)) { var my = (A[1] + B[1]) / 2; mid = [[A[0], my], [B[0], my]]; }
+    else if (!vert(fs) && !vert(ts)) { var mx = (A[0] + B[0]) / 2; mid = [[mx, A[1]], [mx, B[1]]]; }
+    else if (vert(fs)) mid = [[A[0], B[1]]];
+    else mid = [[B[0], A[1]]];
+    var pts = [A].concat(mid, [B]);
+    var path = svg("path", { d: "M" + pts.map(function (q) { return q[0] + "," + q[1]; }).join(" L"), "class": "fe" }, eg);
+    var lbl = null;
+    if (e.lab) {
+      var lx = A[0] + 7, ly = A[1] - 7, anc = "start";
+      if (fs === "b") ly = A[1] + 15;
+      if (fs === "l") { lx = A[0] - 7; anc = "end"; }
+      lbl = svg("text", { x: e.lx || lx, y: e.ly || ly, "text-anchor": anc, "class": "fl" }, eg);
+      lbl.textContent = e.lab;
+    }
+    edgeEls.push({ f: e.f, t: e.t, p: path, l: lbl });
+  });
+  return {
+    show: function (route) {
+      route = route || [];
+      el.classList.toggle("has-path", route.length > 0);
+      Object.keys(nodeEls).forEach(function (id) { nodeEls[id].classList.toggle("on", route.indexOf(id) >= 0); });
+      edgeEls.forEach(function (ed) {
+        var on = false;
+        for (var i = 0; i + 1 < route.length; i++) if (route[i] === ed.f && route[i + 1] === ed.t) on = true;
+        ed.p.classList.toggle("on", on); if (ed.l) ed.l.classList.toggle("on", on);
+      });
+    }
+  };
+}
+var M = function (x, y, w, h, k, t) { return { x: x, y: y, w: w, h: h, k: k, t: t }; };
+var FC = {};
+FC.replay = flow($("#fcReplay"), { nodes: {
+    start: M(350, 10, 300, 40, "start", "Notification: tid, syscall, args"),
+    d1: M(350, 70, 300, 48, "dec", "Thread's queue empty?"),
+    hold: M(20, 70, 260, 48, "term", "Hold it: the thread stays|blocked, as it did live"),
+    d2: M(350, 142, 300, 48, "dec", "Its turn yet? (-S / -T)"),
+    park: M(20, 142, 260, 48, "term", "Park it until its turn"),
+    d3: M(350, 214, 300, 48, "dec", "Same syscall as the|thread's next record?"),
+    bad3: M(20, 214, 260, 48, "bad", "DIVERGENCE*|another syscall"),
+    d4: M(350, 286, 300, 48, "dec", "Same fd arguments?"),
+    bad4: M(20, 286, 260, 48, "bad", "DIVERGENCE|another file or socket"),
+    d5: M(350, 358, 300, 48, "dec", "Same input bytes?"),
+    bad5: M(20, 358, 260, 48, "bad", "DIVERGENCE|it computed something else"),
+    d6: M(350, 430, 300, 48, "dec", "Does it change the|process itself?"),
+    d7: M(720, 430, 210, 48, "dec", "New mapping|or new thread?"),
+    apin: M(720, 502, 210, 48, "act", "Pin the recorded|address or pid"),
+    areal: M(720, 574, 210, 48, "act", "Run it for real|(CONTINUE)"),
+    afake: M(350, 502, 300, 48, "act", "Fake it: write the recorded|outputs, return the recorded result"),
+    d8: M(350, 574, 300, 48, "dec", "Did the call create fds?"),
+    afd: M(20, 574, 260, 48, "act", "Install a real fd or|a stand-in (ADDFD)"),
+    end: M(350, 646, 300, 44, "good", "Answer: the thread continues")
+  }, edges: [
+    { f: "start", t: "d1" }, { f: "d1", t: "hold", fs: "l", ts: "r", lab: "yes" }, { f: "d1", t: "d2", lab: "no" },
+    { f: "d2", t: "park", fs: "l", ts: "r", lab: "no" }, { f: "d2", t: "d3", lab: "yes" },
+    { f: "d3", t: "bad3", fs: "l", ts: "r", lab: "no" }, { f: "d3", t: "d4", lab: "yes" },
+    { f: "d4", t: "bad4", fs: "l", ts: "r", lab: "no" }, { f: "d4", t: "d5", lab: "yes" },
+    { f: "d5", t: "bad5", fs: "l", ts: "r", lab: "no" }, { f: "d5", t: "d6", lab: "yes" },
+    { f: "d6", t: "d7", fs: "r", ts: "l", lab: "yes" }, { f: "d6", t: "afake", lab: "no" },
+    { f: "d7", t: "apin", lab: "yes" }, { f: "d7", t: "areal", fs: "r", ts: "r", via: [[948, 454], [948, 598]], lab: "no" },
+    { f: "apin", t: "areal" }, { f: "areal", t: "end", fs: "b", ts: "r" },
+    { f: "afake", t: "d8" }, { f: "d8", t: "afd", fs: "l", ts: "r", lab: "yes" }, { f: "d8", t: "end", lab: "no" },
+    { f: "afd", t: "end", fs: "b", ts: "l" }
+  ] });
+FC.gen = flow($("#fcGen"), { nodes: {
+    start: M(30, 10, 290, 40, "start", "ptrace(request, tid) by any process"),
+    d1: M(30, 72, 290, 48, "dec", "SEIZE, ATTACH or DETACH?"),
+    d2: M(30, 144, 290, 48, "dec", "Made by a process named|criu? (or sysrr -t)"),
+    d3: M(30, 216, 290, 48, "dec", "Aimed at a recorded thread?"),
+    d4: M(30, 288, 290, 48, "dec", "SEIZE or DETACH?"),
+    aseize: M(30, 370, 290, 48, "act", "seized++ · this thread's|syscalls get F_DUMP"),
+    ignore: M(380, 144, 230, 48, "term", "Ignored: not a checkpoint|(gdb, strace, …)"),
+    adet: M(380, 288, 230, 48, "act", "seized-- · this thread's|next calls are gen + 1"),
+    d5: M(660, 288, 280, 48, "dec", "Last thread let go?|(seized = 0)"),
+    wait: M(660, 200, 280, 48, "term", "Wait for the other threads"),
+    agen: M(660, 370, 280, 48, "good", "gen++ · M_GEN marker:|generation N begins")
+  }, edges: [
+    { f: "start", t: "d1" }, { f: "d1", t: "ignore", fs: "r", ts: "l", lab: "no" }, { f: "d1", t: "d2", lab: "yes" },
+    { f: "d2", t: "ignore", fs: "r", ts: "l", lab: "no" }, { f: "d2", t: "d3", lab: "yes" },
+    { f: "d3", t: "ignore", fs: "r", ts: "l", lab: "no" }, { f: "d3", t: "d4", lab: "yes" },
+    { f: "d4", t: "aseize", lab: "SEIZE" }, { f: "d4", t: "adet", fs: "r", ts: "l", lab: "DETACH" },
+    { f: "adet", t: "d5", fs: "r", ts: "l" }, { f: "d5", t: "agen", lab: "yes" }, { f: "d5", t: "wait", fs: "t", ts: "b", lab: "no", ly: 278 }
+  ] });
+FC.inflight = flow($("#fcInflight"), { nodes: {
+    s: M(10, 45, 220, 52, "start", "A thread was blocked in a|syscall when CRIU froze it"),
+    d: M(270, 45, 180, 52, "dec", "Which restart code?"),
+    a1: M(500, 10, 220, 48, "term", "-512 / -513: CRIU rewinds|the registers to re-run it"),
+    e1: M(750, 10, 200, 48, "good", "Both run it again: first|record of generation N"),
+    a2: M(500, 90, 220, 48, "term", "-516 (sleeps): CRIU|saves -EINTR instead"),
+    e2: M(750, 90, 200, 48, "good", "Both go on: the next call|is the first of gen N")
+  }, edges: [
+    { f: "s", t: "d", fs: "r", ts: "l" }, { f: "d", t: "a1", fs: "r", ts: "l" }, { f: "d", t: "a2", fs: "r", ts: "l" },
+    { f: "a1", t: "e1", fs: "r", ts: "l" }, { f: "a2", t: "e2", fs: "r", ts: "l" }
+  ] });
+FC.sig = flow($("#fcSig"), { nodes: {
+    start: M(30, 10, 330, 40, "start", "A signal reached a recorded thread"),
+    d1: M(30, 72, 330, 52, "dec", "Did the copy cause it itself?|kill/raise, SIGCHLD, SIGPIPE, a fault"),
+    e1: M(420, 74, 520, 48, "term", "Not from the log: it happens again by itself"),
+    d2: M(30, 146, 330, 52, "dec", "Did it kill the process?"),
+    e2: M(420, 148, 520, 48, "good", "Delivered at the end of the recording"),
+    d3: M(30, 220, 330, 52, "dec", "Landed during the checkpoint freeze?|same RIP and RSP, within 2 ms, not blocked"),
+    e3: M(420, 222, 520, 48, "good", "Sent before the copy resumes: the exact instruction"),
+    d4: M(30, 294, 330, 52, "dec", "Is the thread's last syscall|made in the replay too?"),
+    e4: M(420, 296, 520, 48, "good", "Sent before the thread's next call, with code -513 (always restart)"),
+    d5: M(30, 368, 330, 52, "dec", "Did the signal interrupt|that syscall?"),
+    e5: M(420, 370, 520, 48, "good", "Restart code in its registers, then sent: SA_RESTART or EINTR, as live"),
+    e6: M(30, 442, 330, 44, "good", "Sent together with the call's answer")
+  }, edges: [
+    { f: "start", t: "d1" }, { f: "d1", t: "e1", fs: "r", ts: "l", lab: "yes" }, { f: "d1", t: "d2", lab: "no" },
+    { f: "d2", t: "e2", fs: "r", ts: "l", lab: "yes" }, { f: "d2", t: "d3", lab: "no" },
+    { f: "d3", t: "e3", fs: "r", ts: "l", lab: "yes" }, { f: "d3", t: "d4", lab: "no" },
+    { f: "d4", t: "e4", fs: "r", ts: "l", lab: "no" }, { f: "d4", t: "d5", lab: "yes" },
+    { f: "d5", t: "e5", fs: "r", ts: "l", lab: "yes" }, { f: "d5", t: "e6", lab: "no" }
+  ] });
+FC.search = flow($("#fcSearch"), { nodes: {
+    S: M(350, 10, 300, 46, "act", "Replay with -T and the|flips kept so far"),
+    D1: M(350, 80, 300, 48, "dec", "Reached the end of the log?"),
+    FOUND: M(700, 80, 240, 48, "good", "Print FOUND -F …"),
+    D2: M(350, 152, 300, 48, "dec", "Replays left? (-n, default 20)"),
+    BEST: M(700, 152, 240, 48, "term", "Print BEST -F … (furthest)"),
+    D3: M(350, 224, 300, 48, "dec", "An untried single flip|among the suspects?"),
+    D4: M(700, 224, 240, 48, "dec", "An untried pair of the|6 strongest suspects?"),
+    T: M(350, 304, 300, 46, "act", "Restore the checkpoint again,|replay with that flip"),
+    D5: M(350, 374, 300, 48, "dec", "Got past the record that|diverged before?"),
+    K: M(350, 454, 300, 44, "good", "Keep the flip"),
+    X: M(20, 374, 250, 48, "bad", "Drop the flip")
+  }, edges: [
+    { f: "S", t: "D1" }, { f: "D1", t: "FOUND", fs: "r", ts: "l", lab: "yes" }, { f: "D1", t: "D2", lab: "no" },
+    { f: "D2", t: "BEST", fs: "r", ts: "l", lab: "no" }, { f: "D2", t: "D3", lab: "yes" },
+    { f: "D3", t: "T", lab: "yes" }, { f: "D3", t: "D4", fs: "r", ts: "l", lab: "no" },
+    { f: "D4", t: "T", fs: "b", ts: "r", lab: "yes" }, { f: "D4", t: "BEST", fs: "t", ts: "b", lab: "no" },
+    { f: "T", t: "D5" }, { f: "D5", t: "K", lab: "yes" }, { f: "D5", t: "X", fs: "l", ts: "r", lab: "no" },
+    { f: "K", t: "S", fs: "l", ts: "l", via: [[300, 476], [300, 33]] }, { f: "X", t: "D2", fs: "t", ts: "l" }
+  ] });
+FC.lost = flow($("#fcLost"), { nodes: {
+    S: M(10, 20, 160, 52, "start", "sysrr_dump -s|reads the log"),
+    D1: M(200, 20, 180, 52, "dec", "Kernel's lost|counter = 0?"),
+    D2: M(410, 20, 200, 52, "dec", "Every seq present|(or marked in flight)?"),
+    D3: M(640, 20, 190, 52, "dec", "Each call has its|DATA, no LOST flag?"),
+    G: M(860, 20, 90, 52, "good", "OK"),
+    B: M(200, 112, 630, 44, "bad", "WARNING: log is incomplete · exit status 2")
+  }, edges: [
+    { f: "S", t: "D1", fs: "r", ts: "l" }, { f: "D1", t: "D2", fs: "r", ts: "l", lab: "yes" }, { f: "D2", t: "D3", fs: "r", ts: "l", lab: "yes" },
+    { f: "D3", t: "G", fs: "r", ts: "l", lab: "yes" },
+    { f: "D1", t: "B", tx: 290, lab: "no" }, { f: "D2", t: "B", tx: 510, lab: "no" }, { f: "D3", t: "B", tx: 735, lab: "no" }
+  ] });
 
 /* generic stepper */
 var steppers = {};
@@ -918,6 +1137,7 @@ document.addEventListener("keydown", function (e) {
       else cells.push('<div class="cell">#' + q + "<small>ok</small></div>");
     }
     strip.innerHTML = cells.join("");
+    FC.lost.show(over ? ["S", "D1", "B"] : ["S", "D1", "D2", "D3", "G"]);
     term(lt, over ? [
       "#d # sysrr, at Ctrl-C (sums the per-CPU lost counters):",
       "syscalls=63350 data_records=40209 data_bytes=1366526 lost=2 generations=2 file=11.0 MiB",
@@ -993,7 +1213,11 @@ document.addEventListener("keydown", function (e) {
     ]
   };
   var scn = "criu";
-  var st = makeStepper("gens", S.criu, function (s, i) { draw(scn, i); });
+  var GP = {
+    criu: [[], ["start", "d1", "d2", "d3", "d4", "aseize"], ["start", "d1", "d2", "d3", "d4", "aseize"], ["start", "d1", "d2", "d3", "d4", "adet", "d5", "wait"], ["start", "d1", "d2", "d3", "d4", "adet", "d5", "agen"]],
+    gdb: [[], ["start", "d1", "d2", "ignore"], [], ["start", "d1", "d2", "ignore"], ["start", "d1", "d2", "ignore"]]
+  };
+  var st = makeStepper("gens", S.criu, function (s, i) { draw(scn, i); FC.gen.show(GP[scn][i]); });
   $$("#genSeg button").forEach(function (b) {
     b.onclick = function () { scn = b.dataset.s; $$("#genSeg button").forEach(function (x) { x.setAttribute("aria-pressed", x === b ? "true" : "false"); }); st.reset(S[scn]); };
   });
@@ -1057,19 +1281,31 @@ document.addEventListener("keydown", function (e) {
     { n: "clone", call: "clone(CLONE_VM|CLONE_THREAD|…) = 57", r: "real", extra: "Pid pinned: writes 56 to the container's ns_last_pid first, so the new thread gets id 57 again." },
     { n: "futex", call: "futex(0x55d0c2a1e0a8, FUTEX_WAIT_PRIVATE, 2, NULL) = 0", r: "real", extra: "With -T: held until its turn and answered with the recorded result, never run in the kernel." },
     { n: "rt_sigaction", call: "rt_sigaction(SIGUSR1, &act, NULL, 8) = 0", r: "real", extra: "Changes the process itself: the handler must really exist." },
-    { n: "close", call: "close(9) = 0", r: "real", extra: "Keeps the fd table identical to the recording's." }
+    { n: "close", call: "close(9) = 0", r: "real", extra: "Keeps the fd table identical to the recording's." },
+    { n: "write · other bytes", call: "write(1, \"iter 25 acc 7e1d…\\n\", 29)   recorded: \"iter 25 acc ebe3…\\n\"", r: "div", input: true, inT: "16 of 29 bytes differ", extra: "Reported at once with both versions side by side; the copy is stopped (-e stop) for inspection." },
+    { n: "blocked thread", call: "epoll_wait(4, events, 64, -1)   (this thread has no records)", r: "hold", extra: "It stayed blocked in one call for the whole generation live, so it stays blocked here too." }
   ];
+  var CP = ["start", "d1", "d2", "d3", "d4", "d5", "d6"];
+  calls.forEach(function (c) {
+    if (c.r === "hold") c.path = ["start", "d1", "hold"];
+    else if (c.r === "div") c.path = ["start", "d1", "d2", "d3", "d4", "d5", "bad5"];
+    else if (c.r === "real") c.path = CP.concat(c.n === "mmap" || c.n === "clone" ? ["d7", "apin", "areal", "end"] : ["d7", "areal", "end"]);
+    else c.path = CP.concat(c.n === "accept4" || c.n === "openat" ? ["afake", "d8", "afd", "end"] : ["afake", "d8", "end"]);
+  });
   var pk = $("#picker");
   function show(c) {
     $$("button", pk).forEach(function (b) { b.setAttribute("aria-pressed", b.dataset.n === c.n ? "true" : "false"); });
     $("#callLine").textContent = c.call;
-    var real = c.r === "real";
-    focus(root.querySelector("svg"), ["r-thr", "r-k", "r-rep", "e-r1", "e-r2", real ? "r-real" : "r-fake", real ? "e-rr" : "e-rf", "r-extra"]);
-    $("#fakeTxt").textContent = real ? "write recorded bytes into memory" : c.out;
-    var c3 = $("#ck3"); c3.textContent = c.input ? "✓" : "–"; c3.setAttribute("class", "chk " + (c.input ? "ok" : "no"));
-    $("#ck1").setAttribute("class", "chk ok"); $("#ck2").setAttribute("class", "chk ok");
-    $("#ck3t").textContent = c.input ? "input bytes: " + c.inT : "input bytes: none for this call";
-    $("#pathTxt").textContent = real ? "→ CONTINUE" : "→ fake";
+    var real = c.r === "real", fake = c.r === "fake", div = c.r === "div", hold = c.r === "hold";
+    focus(root.querySelector("svg"), ["r-thr", "r-k", "r-rep", "e-r1", "e-r2", "r-extra"].concat(real ? ["r-real", "e-rr"] : fake ? ["r-fake", "e-rf"] : []));
+    $("#fakeTxt").textContent = fake ? c.out : "write recorded bytes into memory";
+    var c3 = $("#ck3"); c3.textContent = div ? "✗" : c.input ? "✓" : "–"; c3.setAttribute("class", "chk " + (div ? "bad2" : c.input ? "ok" : "no"));
+    $("#ck1").textContent = hold ? "–" : "✓"; $("#ck2").textContent = hold ? "–" : "✓";
+    $("#ck1").setAttribute("class", "chk " + (hold ? "no" : "ok")); $("#ck2").setAttribute("class", "chk " + (hold ? "no" : "ok"));
+    if (hold) { c3.textContent = "–"; c3.setAttribute("class", "chk no"); }
+    $("#ck3t").textContent = hold ? "nothing to compare: no record" : c.input ? "input bytes: " + c.inT : "input bytes: none for this call";
+    $("#pathTxt").textContent = real ? "→ CONTINUE" : fake ? "→ fake" : div ? "→ DIVERGENCE" : "→ hold: no answer yet";
+    FC.replay.show(c.path);
     $("#extraTxt").textContent = c.extra;
   }
   calls.forEach(function (c) {
@@ -1252,7 +1488,7 @@ document.addEventListener("keydown", function (e) {
     b.onclick = function () {
       if (busy) return; mode = b.dataset.m; runs = 0; bad = 0;
       $$("#thSeg button").forEach(function (x) { x.setAttribute("aria-pressed", x === b ? "true" : "false"); });
-      update(); idle(); term($("#thTerm"), mode === "T" ? ["#d -T runs one stretch at a time, ordered by its key (a diamond)"] : mode === "S" ? ["#d -S answers syscalls in seq order: #100, #101, … but code between them still overlaps"] : ["#d no order: both threads run freely, as on any replay"]);
+      update(); idle(); FC.search.show([]); term($("#thTerm"), mode === "T" ? ["#d -T runs one stretch at a time, ordered by its key (a diamond)"] : mode === "S" ? ["#d -S answers syscalls in seq order: #100, #101, … but code between them still overlaps"] : ["#d no order: both threads run freely, as on any replay"]);
     };
   });
   $("#thSearch").onclick = async function () {
@@ -1260,11 +1496,16 @@ document.addEventListener("keydown", function (e) {
     busy = true; update();
     flip.A = false; flip.B = false; update(); idle();
     var out = ["$ ./sysrr_search.sh -i ckpt.tar.gz -g 1 rec.log"]; term($("#thTerm"), out);
-    await sleep(500); out.push("try 1 (no flips): progress 2 (diverged at #102)"); out.push("#d suspects: #101 (thread B), #100 (thread A)"); term($("#thTerm"), out);
+    FC.search.show(["S", "D1"]);
+    await sleep(700); out.push("try 1 (no flips): progress 2 (diverged at #102)"); out.push("#d suspects: #101 (thread B), #100 (thread A)"); term($("#thTerm"), out);
+    FC.search.show(["D1", "D2", "D3", "T"]); await sleep(900);
     busy = false; flip.B = true; update(); await replay(true); busy = true;
+    FC.search.show(["T", "D5", "X"]);
     out.push("try 2 (-F 101): progress 2 (diverged at #102)   not past: dropped"); term($("#thTerm"), out);
-    await sleep(400);
+    await sleep(900);
+    FC.search.show(["X", "D2", "D3", "T"]); await sleep(900);
     busy = false; flip.B = false; flip.A = true; update(); await replay(true); busy = true;
+    FC.search.show(["T", "D5", "K", "S", "D1", "FOUND"]);
     out.push("try 3 (-F 100): progress all"); out.push("#g FOUND -F 100 (3 replays)");
     out.push("#d the flip marks the race: right after #100, A and B both touched t");
     term($("#thTerm"), out);
@@ -1276,14 +1517,15 @@ document.addEventListener("keydown", function (e) {
 /* ---------- 9 signals ---------- */
 (function () {
   var sigs = [
-    { n: "Timer signal", ex: "SIGALRM from setitimer", bin: "log", d: "Sent at the thread's last syscall before it. Restored timers were switched off at attach." },
-    { n: "From outside", ex: "podman kill -s USR1", bin: "log", d: "Sent at the same syscall as in the live run." },
-    { n: "During the checkpoint freeze", ex: "landed after CRIU saved signals", bin: "log", d: "Sent before the copy resumes, so the handler runs from the exact instruction. Matched by RIP, RSP and a 2 ms window." },
-    { n: "Sent to itself", ex: "raise(SIGUSR1)", bin: "again", d: "Its kill call runs for real, so the signal happens again." },
-    { n: "SIGCHLD", ex: "a child exits", bin: "again", d: "The real children send it, at their own time." },
-    { n: "SIGPIPE", ex: "write to a closed pipe", bin: "again", d: "Goes out with the failed write's EPIPE." },
-    { n: "SIGSEGV", ex: "bad pointer", bin: "again", d: "The same instruction faults again." },
-    { n: "Fatal, from outside", ex: "it killed the live process", bin: "end", d: "Delivered at the end of the recording, to the process that died live." }
+    { n: "Timer, during a sleep", ex: "SIGALRM interrupts nanosleep", p: ["start", "d1", "d2", "d3", "d4", "d5", "e5"], d: "The kernel then restarts the sleep after the handler, or fails it with EINTR, as live. Restored timers were switched off at attach." },
+    { n: "From outside", ex: "podman kill -s USR1", p: ["start", "d1", "d2", "d3", "d4", "d5", "e6"], d: "It arrived after a call had finished, so it goes out with that call's answer." },
+    { n: "Timer, during timing-only poll", ex: "the poll isn't made in the replay", p: ["start", "d1", "d2", "d3", "d4", "e4"], d: "-513 tells the kernel to restart whatever call the thread makes instead." },
+    { n: "During the checkpoint freeze", ex: "landed after CRIU saved signals", p: ["start", "d1", "d2", "d3", "e3"], d: "The handler runs from the exact instruction the checkpoint caught. The time test matters in tight loops." },
+    { n: "Sent to itself", ex: "raise(SIGUSR1)", p: ["start", "d1", "e1"], d: "Its kill call runs for real, so the signal happens again." },
+    { n: "SIGCHLD", ex: "a child exits", p: ["start", "d1", "e1"], d: "The real children send it, at their own time." },
+    { n: "SIGPIPE", ex: "write to a closed pipe", p: ["start", "d1", "e1"], d: "Goes out with the failed write's EPIPE error." },
+    { n: "SIGSEGV", ex: "bad pointer", p: ["start", "d1", "e1"], d: "The same instruction faults again." },
+    { n: "Fatal, from outside", ex: "it killed the live process", p: ["start", "d1", "d2", "e2"], d: "Delivered when the log runs out, to the process that died live." }
   ];
   var g = $("#sigs");
   sigs.forEach(function (s) {
@@ -1291,7 +1533,8 @@ document.addEventListener("keydown", function (e) {
     b.setAttribute("aria-pressed", "false");
     b.onclick = function () {
       $$("button", g).forEach(function (x) { x.setAttribute("aria-pressed", x === b ? "true" : "false"); });
-      ["log", "again", "end"].forEach(function (k) { var bin = $("#bin-" + k); bin.classList.toggle("on", k === s.bin); $(".what", bin).textContent = k === s.bin ? s.n + ": " + s.d : ""; });
+      $("#sigDesc").innerHTML = "<b>" + esc(s.n) + "</b> · " + esc(s.d);
+      FC.sig.show(s.p);
     };
     g.appendChild(b);
   });
