@@ -14,6 +14,7 @@ container --sysrr--> rec.log ---------> sysrr_replay -g N rec.log
 ckpt.tar.gz -----------------------------> restore (leave-stopped) -> pid
 ```
 
+- `docs/`: an interactive tour of the tool for presenting it (`docs/index.html`, served by GitHub Pages)
 - `syscall-rr/`: the tool, its tests and its notes
 - `hello/`: a minimal libbpf example, used to check the build setup
 
