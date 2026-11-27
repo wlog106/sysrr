@@ -180,25 +180,15 @@ rect.b-prog, rect.b-kern, rect.b-tool, rect.b-ext, rect.b-file { stroke-width: 1
 .thr { stroke: var(--prog); stroke-width: 2; }
 .tick { fill: var(--prog); }
 
-/* toolkit */
-.tk { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 16px; }
-.tk-tabs { display: grid; gap: 6px; align-content: start; }
-.tk-tabs button { text-align: left; border: 1px solid var(--line); background: var(--surface); border-radius: 10px; padding: 10px 12px; cursor: pointer; display: grid; gap: 1px; }
-.tk-tabs button b { font: 600 14px var(--f-mono); }
-.tk-tabs button small { color: var(--muted); font-size: 12px; }
-.tk-tabs button[aria-selected="true"] { border-color: var(--tool); box-shadow: inset 3px 0 0 var(--tool); background: var(--tool-soft); }
-.tk-body { display: grid; gap: 14px; min-width: 0; }
-.io { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font: 600 13px var(--f-mono); }
-.io .f { border: 1.5px solid var(--line-strong); border-radius: 7px; padding: 4px 9px; background: var(--surface); }
-.io .t { border: 1.5px solid var(--tool); border-radius: 7px; padding: 4px 9px; background: var(--tool-soft); }
-.io .a { color: var(--muted); }
-.io .where { margin-left: auto; font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
-.flags { display: flex; flex-wrap: wrap; gap: 6px; }
-.flags button { font: 600 13px var(--f-mono); border: 1px solid var(--line-strong); border-radius: 6px; background: var(--surface); padding: 4px 9px; cursor: pointer; }
-.flags button[aria-pressed="true"] { background: var(--ink); color: var(--surface); border-color: var(--ink); }
-.flagdesc { min-height: 1.6em; color: var(--muted); }
-.flagdesc b { color: var(--ink); font-family: var(--f-mono); font-weight: 600; }
-@media (max-width: 760px) { .tk { grid-template-columns: minmax(0, 1fr); } .tk-tabs { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); } }
+/* toolkit: a plain reference table */
+.tools { width: 100%; border-collapse: collapse; font-size: 14px; }
+.tools th, .tools td { text-align: left; vertical-align: top; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+.tools th { font: 600 11px var(--f-mono); letter-spacing: .07em; text-transform: uppercase; color: var(--muted); }
+.tools td:first-child { font: 600 14px var(--f-mono); white-space: nowrap; }
+.tools td.where { font: 600 11px var(--f-mono); letter-spacing: .05em; text-transform: uppercase; color: var(--muted); white-space: nowrap; }
+.tools code { white-space: nowrap; }
+.tools .opts code { display: inline-block; margin: 0 8px 2px 0; color: var(--ink); }
+.tools .opts { color: var(--muted); font-size: 13px; }
 
 /* ring slots, log strip */
 .slot { fill: var(--surface); stroke: var(--line); }
@@ -702,20 +692,26 @@ footer { border-top: 1px solid var(--line); padding-block: 28px 56px; color: var
   </div>
 </section>
 
-<!-- 2 TOOLKIT -->
+<!-- TOOLKIT -->
 <section class="scene" id="toolkit" data-title="Toolkit">
-  <div class="head"><span class="eyebrow">02 · the tools</span><h2>The toolkit</h2>
-    <p class="lede">Five commands. Click one, then click its options.</p></div>
-  <div class="stage">
-    <div class="tk">
-      <div class="tk-tabs" role="tablist" id="tkTabs"></div>
-      <div class="tk-body">
-        <div class="io" id="tkIO"></div>
-        <div class="flags" id="tkFlags"></div>
-        <div class="flagdesc" id="tkDesc"></div>
-        <pre class="term" id="tkTerm"></pre>
-      </div>
-    </div>
+  <div class="head"><span class="eyebrow">reference</span><h2>The toolkit</h2>
+    <p class="lede">Five commands, in the order you use them.</p></div>
+  <div class="stage tw">
+    <table class="tools">
+      <thead><tr><th>tool</th><th>where</th><th>what it does</th><th>you type</th><th>main options</th></tr></thead>
+      <tbody>
+        <tr><td>sysrr</td><td class="where">machine A</td><td>Records every syscall into a log. Exit 2 = records lost.</td><td><code>sudo ./sysrr -C CTR -o rec.log</code></td>
+          <td class="opts"><code>-p PID</code><code>-f</code> one process (+ children)<br><code>-b MB</code> ring size</td></tr>
+        <tr><td>sysrr_dump</td><td class="where">anywhere</td><td>Prints a log; checks nothing is missing.</td><td><code>./sysrr_dump -s rec.log</code></td>
+          <td class="opts"><code>-g N</code> one generation<br><code>-a</code> include CRIU's calls</td></tr>
+        <tr><td>sysrr_restore.sh</td><td class="where">machine B</td><td>Restores a checkpoint, left stopped.</td><td><code>sudo ./sysrr_restore.sh ckpt.tar.gz NEW</code></td>
+          <td class="opts"><code>-c "--tcp-established"</code> open TCP connections</td></tr>
+        <tr><td>sysrr_replay</td><td class="where">machine B</td><td>Replays one generation into the stopped copy.</td><td><code>sudo ./sysrr_replay -C NEW -g 1 rec.log</code></td>
+          <td class="opts"><code>-S</code><code>-T</code><code>-F SEQ,…</code> thread order<br><code>-e stop|live|kill</code> at the end<br><code>-v</code> print every call</td></tr>
+        <tr><td>sysrr_search.sh</td><td class="where">machine B</td><td>When a -T replay diverges, finds flips that fit the whole log.</td><td><code>./sysrr_search.sh -i ckpt.tar.gz -g 1 rec.log</code></td>
+          <td class="opts"><code>-n 20</code> max replays<br><code>-k</code> keep the last copy</td></tr>
+      </tbody>
+    </table>
   </div>
 </section>
 
@@ -1149,64 +1145,6 @@ document.addEventListener("keydown", function (e) {
     gl.textContent = s.gen >= 2 ? "g0 · g1" : "g0";
     badge.textContent = s.badge || "";
   });
-})();
-
-/* ---------- 2 toolkit ---------- */
-(function () {
-  var tools = [
-    { n: "sysrr", s: "record syscalls", where: "machine A", io: [["rec", "container"], ["tool", "sysrr"], ["f", "rec.log"]],
-      flags: [["-C NAME", "Record every process in container NAME, including new ones."], ["-p PID", "Record one process by its host pid."],
-        ["-f", "With -p: follow the processes it forks."], ["-o FILE", "Where the log goes."], ["-b MB", "Ring buffer size, 64 MiB by default."],
-        ["-r", "Copy inputs again at exit, to catch buffers another thread changed mid-syscall."], ["-t", "Count any tracer as a checkpoint, not only a process named criu."]],
-      term: ["$ sudo ./sysrr -C CTR -o rec.log", "recording pid 4121 (ns pid 1, redis-server) +children -> rec.log", "^C",
-        "syscalls=63352 data_records=40210 data_bytes=1366555 lost=0 generations=2 file=11.0 MiB", "#d exit status: 0 complete · 2 records lost · 3 log not written"] },
-    { n: "sysrr_dump", s: "read a log", where: "anywhere", io: [["f", "rec.log"], ["tool", "sysrr_dump"], ["f", "text"]],
-      flags: [["-s", "Summary only: counts per generation and the integrity check."], ["-g N", "Only syscalls of generation N."],
-        ["-a", "Also show CRIU's parasite syscalls."], ["-x", "Hex-dump captured buffers."], ["-r", "Only syscalls whose input changed while they ran (needs sysrr -r)."]],
-      term: ["$ ./sysrr_dump -g 1 rec.log | head -4", "# columns: seq gen ns_tid/host_tid seconds syscall(args) = ret",
-        "#411     g1 1/4121    12.481205 read(0x3, 0x7ffd5e2c1a40, 0x10) = 16", "      [OUT arg1 16B] \"\\x9c\\x04\\xe1…\"",
-        "#412     g1 1/4121    12.481219 clock_gettime(0, 0x7ffd5e2c1a30) = 0"] },
-    { n: "sysrr_restore.sh", s: "restore, stopped", where: "machine B", io: [["f", "ckpt.tar.gz"], ["tool", "sysrr_restore.sh"], ["rec", "stopped container"]],
-      flags: [["NAME", "Name of the restored container."], ["-c OPTS", "Extra podman restore options, e.g. --tcp-established."],
-        ["leave-stopped", "What it adds to /etc/criu/default.conf for this restore only, then puts the file back."], ["acpi_pm", "Switches the clock source like on machine A."]],
-      term: ["$ sudo ./sysrr_restore.sh ckpt.tar.gz NEW", "clock source: acpi_pm", "restored NEW pid 52311 (stopped); now: sysrr_replay -C NEW -g GEN rec.log"] },
-    { n: "sysrr_replay", s: "replay a generation", where: "machine B", io: [["f", "rec.log"], ["rec", "stopped container"], ["tool", "sysrr_replay"], ["f", "report"]],
-      flags: [["-C NAME", "The restored container (or -p PID)."], ["-g N", "Generation to replay: match the checkpoint you restored."],
-        ["-S", "Answer syscalls in the recorded order across threads."], ["-T", "Serial mode: one thread's code at a time, in recorded order."],
-        ["-F SEQ,…", "With -T: flip the order guess at these records."], ["-e stop|live|kill", "What happens at the end of the log."],
-        ["-w FILE", "Save what the copy writes to stdout/stderr (those writes are faked)."], ["-c", "Keep going when an input differs."], ["-v", "Print every answered syscall."]],
-      term: ["$ sudo ./sysrr_replay -v -C NEW -g 1 rec.log", "seccomp listener attached to 1 process(es): 52311; resuming",
-        "#411     1     fake read(0x3, 0x7ffd5e2c1a40, 0x10) = 16", "#412     1     fake clock_gettime(0, 0x7ffd5e2c1a30) = 0",
-        "#413     1     fake write(0x1, 0x7ffd5e2c1a50, 0x1d) = 29", "#d …", "#g == end of the recording reached =="] },
-    { n: "sysrr_search.sh", s: "find a thread order", where: "machine B", io: [["f", "ckpt.tar.gz"], ["f", "rec.log"], ["tool", "sysrr_search.sh"], ["f", "-F flips"]],
-      flags: [["-i FILE", "The checkpoint: it restores a fresh copy for every try."], ["-g N", "Generation (1 by default)."],
-        ["-n N", "Give up after N replays (20 by default)."], ["-o OPTS", "Extra replay options, added to -T."], ["-k", "Keep the last copy, stopped, for inspection."]],
-      term: ["$ ./sysrr_search.sh -i ckpt.tar.gz -g 1 rec.log", "try 1 (no flips): progress 4937 (diverged at #8354)",
-        "try 2 (-F 9057): progress 4938 (diverged at #8354)", "try 4 (-F 9044): progress 4940 (diverged at #11138)", "#d …", "#g FOUND -F 9044,11087 (7 replays)"] }
-  ];
-  var tabs = $("#tkTabs"), io = $("#tkIO"), fl = $("#tkFlags"), desc = $("#tkDesc"), tm = $("#tkTerm");
-  function show(n) {
-    var t = tools[n];
-    $$("button", tabs).forEach(function (b, k) { b.setAttribute("aria-selected", k === n ? "true" : "false"); });
-    io.innerHTML = t.io.map(function (p, k) {
-      var cls = p[0] === "tool" ? "t" : "f";
-      var style = p[0] === "rec" ? ' style="border-color:var(--prog);background:var(--prog-soft)"' : "";
-      return (k ? '<span class="a">→</span>' : "") + '<span class="' + cls + '"' + style + ">" + esc(p[1]) + "</span>";
-    }).join("") + '<span class="where">' + esc(t.where) + "</span>";
-    fl.innerHTML = "";
-    t.flags.forEach(function (f, k) {
-      var b = document.createElement("button"); b.textContent = f[0]; b.setAttribute("aria-pressed", k === 0 ? "true" : "false");
-      b.onclick = function () { $$("button", fl).forEach(function (x) { x.setAttribute("aria-pressed", "false"); }); b.setAttribute("aria-pressed", "true"); desc.innerHTML = "<b>" + esc(f[0]) + "</b> · " + esc(f[1]); };
-      fl.appendChild(b);
-    });
-    desc.innerHTML = "<b>" + esc(t.flags[0][0]) + "</b> · " + esc(t.flags[0][1]);
-    term(tm, t.term);
-  }
-  tools.forEach(function (t, n) {
-    var b = document.createElement("button"); b.setAttribute("role", "tab");
-    b.innerHTML = "<b>" + esc(t.n) + "</b><small>" + esc(t.s) + "</small>"; b.onclick = function () { show(n); }; tabs.appendChild(b);
-  });
-  show(0);
 })();
 
 /* ---------- 3 record ---------- */
