@@ -10,7 +10,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=IBM+Plex+Sans:wght@400;600&display=swap">
 <style>
-/* Layout: a talk in scenes. One sticky scene bar; each scene = a heading, one line, and one stage
+/* Layout: a map (tree of every part) on top, then the parts in tree order. A sticky bar shows map › branch › part; each scene = a heading, one line, and one stage
    (diagram + stepper + terminal). Color carries meaning everywhere:
    teal = kernel, amber = sysrr's own tools, indigo = the program being recorded, grey = other tools. */
 :root {
@@ -70,6 +70,34 @@ button { font: inherit; color: inherit; }
 .keys { margin-left: auto; font-size: 12px; color: var(--muted); white-space: nowrap; }
 .keys kbd { font: 600 11px var(--f-mono); border: 1px solid var(--line-strong); border-bottom-width: 2px; border-radius: 4px; padding: 0 5px; color: var(--ink); }
 @media (max-width: 760px) { .keys { display: none; } }
+
+.maplink { flex: none; font: 600 13px var(--f-body); text-decoration: none; color: var(--ink); border: 1px solid var(--line-strong); border-radius: 999px; padding: 3px 10px; }
+.maplink:hover { border-color: var(--tool); }
+.crumb { flex: none; font: 600 13px var(--f-display); color: var(--muted); white-space: nowrap; }
+.crumb b { color: var(--ink); font-weight: 600; }
+@media (max-width: 760px) { .crumb { display: none; } }
+.mapwrap { display: grid; gap: 10px; background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 16px; scroll-margin-top: 64px; }
+.maphead { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 14px; }
+.maphead h2 { font-size: 24px; }
+.stage[id] { scroll-margin-top: 64px; }
+.tn { cursor: pointer; }
+.tn rect { transition: stroke .2s, fill .2s; }
+.tn .tt { font: 600 14px var(--f-display); fill: var(--ink); }
+.tn .tm { font: 600 10px var(--f-mono); fill: var(--muted); letter-spacing: .06em; }
+.tn .th { font: 12.5px var(--f-body); fill: var(--muted); }
+.tn .tchev { font: 600 14px var(--f-mono); fill: var(--muted); }
+.t-root rect { fill: var(--tool-soft); stroke: var(--tool); stroke-width: 1.8; }
+.t-br rect { fill: var(--surface); stroke: var(--ink); stroke-width: 1.6; }
+.t-lf rect { fill: var(--surface); stroke: var(--line-strong); stroke-width: 1.3; }
+.t-band { fill: var(--bg); }
+.t-bandl { font: 600 10.5px var(--f-mono); fill: var(--muted); letter-spacing: .08em; }
+.tedge { fill: none; stroke: var(--line-strong); stroke-width: 1.5; transition: stroke .2s, opacity .2s; }
+#treeSvg.trace .tn:not(.on), #treeSvg.trace .tedge:not(.on) { opacity: .35; }
+.tn.on rect { stroke: var(--tool); stroke-width: 2.4; }
+.tn.on .tchev { fill: var(--tool); }
+.tedge.on { stroke: var(--tool); stroke-width: 2.4; }
+.tn.here rect { fill: var(--tool-soft); }
+.eyebrow a { color: inherit; }
 
 /* hero */
 .hero { padding-block: 56px 40px; display: grid; gap: 22px; }
@@ -333,7 +361,9 @@ footer { border-top: 1px solid var(--line); padding-block: 28px 56px; color: var
 <header class="bar">
   <div class="wrap">
     <a class="brand" href="#top">sys<span>rr</span></a>
-    <nav class="chips" id="chips" aria-label="Scenes"></nav>
+    <a class="maplink" href="#map">⌂ Map</a>
+    <span class="crumb" id="crumb"></span>
+    <nav class="chips" id="chips" aria-label="Parts of this branch"></nav>
     <div class="keys"><kbd>←</kbd> <kbd>→</kbd> step</div>
   </div>
 </header>
@@ -343,11 +373,9 @@ footer { border-top: 1px solid var(--line); padding-block: 28px 56px; color: var
 <div class="hero">
   <h1>sys<span>rr</span></h1>
   <p class="tag">Record every syscall of a container. Checkpoint it while it runs. Replay the restored copy, on any machine, until it fails the same way.</p>
-  <div class="flow4">
-    <a href="#journey"><span class="where">machine A</span><b>1 · Record</b><small>eBPF copies every syscall into a log</small></a>
-    <a href="#gens"><span class="where">machine A</span><b>2 · Checkpoint</b><small>CRIU snapshot, container keeps running</small></a>
-    <a href="#attach"><span class="where">machine B</span><b>3 · Restore</b><small>Copy comes back stopped, before its first syscall</small></a>
-    <a href="#replay"><span class="where">machine B</span><b>4 · Replay</b><small>Every syscall answered from the log</small></a>
+  <div class="mapwrap" id="map">
+    <div class="maphead"><h2>The whole picture</h2><span class="note">Hover to trace a branch. Click any part to dive in; <b>⌂ Map</b> in the top bar brings you back here.</span></div>
+    <div class="svgbox"><svg id="treeSvg" role="img" aria-label="Map of sysrr as a tree: Overview; Record on machine A (one syscall, lost records, generations); Checkpoint to restore (the syscall in flight, attach); Replay on machine B (answering one syscall, divergence, threads, signals, end of the log); Results (evidence, limits); Reference (the toolkit)."></svg></div>
   </div>
   <div class="legend"><span class="lp"><i></i>the program</span><span class="lk"><i></i>Linux kernel</span><span class="lt"><i></i>sysrr tools</span><span class="le"><i></i>podman / CRIU</span></div>
 </div>
@@ -412,23 +440,6 @@ footer { border-top: 1px solid var(--line); padding-block: 28px 56px; color: var
   </div>
 </section>
 
-<!-- 2 TOOLKIT -->
-<section class="scene" id="toolkit" data-title="Toolkit">
-  <div class="head"><span class="eyebrow">02 · the tools</span><h2>The toolkit</h2>
-    <p class="lede">Five commands. Click one, then click its options.</p></div>
-  <div class="stage">
-    <div class="tk">
-      <div class="tk-tabs" role="tablist" id="tkTabs"></div>
-      <div class="tk-body">
-        <div class="io" id="tkIO"></div>
-        <div class="flags" id="tkFlags"></div>
-        <div class="flagdesc" id="tkDesc"></div>
-        <pre class="term" id="tkTerm"></pre>
-      </div>
-    </div>
-  </div>
-</section>
-
 <!-- 3 RECORD -->
 <section class="scene" id="record" data-title="Recording">
   <div class="head"><span class="eyebrow">03 · record side</span><h2>Recording one syscall</h2>
@@ -474,7 +485,7 @@ footer { border-top: 1px solid var(--line); padding-block: 28px 56px; color: var
     <div class="cap" data-cap></div>
   </div>
 
-  <div class="stage">
+  <div class="stage" id="lost">
     <div class="head"><h3>Is anything missing?</h3><span class="lede" style="font-size:15px">Every syscall takes the next seq, so holes are visible. Each SYSCALL record says how many DATA records it expects.</span></div>
     <div class="controls"><div class="seg" id="lostSeg"><button aria-pressed="true" data-l="0">ring keeps up</button><button aria-pressed="false" data-l="1">ring overflows</button></div></div>
     <div class="svgbox"><svg id="fcLost" viewBox="0 0 960 165" role="img" aria-label="Flowchart of sysrr_dump -s: the kernel lost counter must be 0, every seq must be present or marked in flight, and each syscall must have all its DATA records with no LOST flag; any no leads to WARNING, log is incomplete."></svg></div>
@@ -509,16 +520,16 @@ footer { border-top: 1px solid var(--line); padding-block: 28px 56px; color: var
     <div class="fhead"><h3>What the recorder does with every ptrace call</h3><span class="note">follows the steps above</span></div>
     <div class="svgbox"><svg id="fcGen" viewBox="0 0 960 430" role="img" aria-label="Flowchart: a ptrace call counts only if it is SEIZE, ATTACH or DETACH, made by a process named criu, aimed at a recorded thread. SEIZE increments the seized count and flags the thread's syscalls F_DUMP. DETACH decrements it and starts that thread at gen plus 1; when the last thread is let go, gen increments and an M_GEN marker is written."></svg></div>
   </div>
-  <div class="stage">
-    <div class="fhead"><h3>The syscall in flight at the checkpoint</h3><span class="note">why generation N starts exactly where the restored copy starts</span></div>
-    <div class="svgbox"><svg id="fcInflight" viewBox="0 0 960 150" role="img" aria-label="Flowchart: a thread blocked in a syscall when CRIU froze it gets a restart code. With -512 or -513, CRIU rewinds the registers and both the live process and the copy run the call again, as the first record of generation N. With -516, used by sleeps, CRIU saves -EINTR, and both go on to the next call, which is the first of generation N."></svg></div>
-  </div>
 </section>
 
 <!-- 5 ATTACH -->
 <section class="scene" id="attach" data-title="Attach">
   <div class="head"><span class="eyebrow">05 · restore</span><h2>Attach: the copy installs its own filter</h2>
     <p class="lede">A process can only install a seccomp filter on itself, and a restored process never calls execve. So sysrr_replay borrows its instruction pointer for a few milliseconds.</p></div>
+  <div class="stage" id="inflight">
+    <div class="fhead"><h3>The syscall in flight at the checkpoint</h3><span class="note">why generation N starts exactly where the restored copy starts</span></div>
+    <div class="svgbox"><svg id="fcInflight" viewBox="0 0 960 150" role="img" aria-label="Flowchart: a thread blocked in a syscall when CRIU froze it gets a restart code. With -512 or -513, CRIU rewinds the registers and both the live process and the copy run the call again, as the first record of generation N. With -516, used by sleeps, CRIU saves -EINTR, and both go on to the next call, which is the first of generation N."></svg></div>
+  </div>
   <div class="stage" data-stepper="attach">
     <div class="attach">
       <ol class="steps" id="atSteps"></ol>
@@ -688,6 +699,23 @@ footer { border-top: 1px solid var(--line); padding-block: 28px 56px; color: var
     <div class="lim"><span class="lt2 t">checkpoint</span><b>Open TCP connections</b><span>Need --tcp-established on both checkpoint and restore; podman then keeps the original name.</span></div>
     <div class="lim"><span class="lt2 t">checkpoint</span><b>vfork before exec</b><span>A checkpoint can catch Python's subprocess mid-vfork and fail after 10 s. Checkpoint again; replay that attempt's generation.</span></div>
     <div class="lim"><span class="lt2 t">live mode</span><b>Stand-ins and no second checkpoint</b><span>Connections from the recording stay stand-ins; CRIU can't checkpoint a process that has a seccomp listener.</span></div>
+  </div>
+</section>
+
+<!-- 2 TOOLKIT -->
+<section class="scene" id="toolkit" data-title="Toolkit">
+  <div class="head"><span class="eyebrow">02 · the tools</span><h2>The toolkit</h2>
+    <p class="lede">Five commands. Click one, then click its options.</p></div>
+  <div class="stage">
+    <div class="tk">
+      <div class="tk-tabs" role="tablist" id="tkTabs"></div>
+      <div class="tk-body">
+        <div class="io" id="tkIO"></div>
+        <div class="flags" id="tkFlags"></div>
+        <div class="flagdesc" id="tkDesc"></div>
+        <pre class="term" id="tkTerm"></pre>
+      </div>
+    </div>
   </div>
 </section>
 
@@ -941,24 +969,127 @@ function makeStepper(name, steps, render) {
   return api;
 }
 
-/* ---------- scene bar ---------- */
+/* ---------- the map: a tree of every part; the bar shows where you are in it ---------- */
+var TREE = [
+  { t: "Overview", leaves: [{ a: "journey", t: "The whole journey", h: "record → checkpoint → restore → replay" }] },
+  { t: "Record", m: "MACHINE A", leaves: [
+    { a: "record", t: "Recording one syscall", h: "copies at entry and exit, ring buffer" },
+    { a: "lost", t: "Is anything missing?", h: "seq holes, DATA counts, lost counter" },
+    { a: "gens", t: "Generations", h: "spotting CRIU: generation N = checkpoint N" }] },
+  { t: "Checkpoint → restore", m: "A → B", leaves: [
+    { a: "inflight", t: "The syscall in flight", h: "where the restored copy starts" },
+    { a: "attach", t: "Attach", h: "the copy installs its own seccomp filter" }] },
+  { t: "Replay", m: "MACHINE B", leaves: [
+    { a: "replay", t: "Answering one syscall", h: "fake it from the log, or run it for real" },
+    { a: "diverge", t: "Divergence", h: "flip one byte and watch it get caught" },
+    { a: "threads", t: "Threads: -S, -T, flips", h: "ordering code the log cannot see" },
+    { a: "signals", t: "Signals", h: "from the log, or they happen again" },
+    { a: "end", t: "End of the log", h: "-e stop, live or kill" }] },
+  { t: "Results", leaves: [
+    { a: "evidence", t: "Evidence", h: "30 tests, overhead, compared with crr" },
+    { a: "limits", t: "Limits", h: "what syscalls cannot show" }] },
+  { t: "Reference", leaves: [{ a: "toolkit", t: "The toolkit", h: "five commands and their options" }] }
+];
 var scenes = $$("section.scene");
-var chips = $("#chips");
-scenes.forEach(function (s) { var a = document.createElement("a"); a.href = "#" + s.id; a.textContent = s.dataset.title; chips.appendChild(a); });
+var chips = $("#chips"), crumb = $("#crumb");
+var parts = [];   /* every leaf in page order: { a, t, b (branch index), el } */
+TREE.forEach(function (br, bi) { br.leaves.forEach(function (lf) { parts.push({ a: lf.a, t: lf.t, b: bi, el: document.getElementById(lf.a) }); }); });
+
+(function drawTree() {
+  var el = $("#treeSvg"), ROW = 38, GAP = 16, y = 14, rows = [];
+  TREE.forEach(function (br, bi) {
+    br.y0 = y;
+    br.leaves.forEach(function (lf) { lf.y = y; y += ROW; });
+    br.y1 = y - ROW; br.cy = (br.y0 + br.y1) / 2 + 14; y += GAP;
+  });
+  var H = y - GAP + 14, rootY = H / 2;
+  el.setAttribute("viewBox", "0 0 960 " + H);
+  var eg = svg("g", {}, el), ng = svg("g", {}, el), nodes = [], edges = [];
+  function elbow(x1, y1, x2, y2) { var mx = (x1 + x2) / 2; return "M" + x1 + "," + y1 + " H" + mx + " V" + y2 + " H" + x2; }
+  function node(x, y, w, h, cls, title, meta, hint, href) {
+    var g = svg("g", { "class": "tn " + cls, tabindex: "0", role: "link" }, ng);
+    svg("rect", { x: x, y: y, width: w, height: h, rx: cls === "t-root" ? 12 : 8 }, g);
+    var tt = svg("text", { x: x + 12, y: y + (meta ? 18 : h / 2 + 5), "class": "tt" }, g); tt.textContent = title;
+    if (meta) { var tm = svg("text", { x: x + 12, y: y + 33, "class": "tm" }, g); tm.textContent = meta; }
+    if (cls === "t-lf") { var ch = svg("text", { x: x + w - 16, y: y + h / 2 + 5, "class": "tchev" }, g); ch.textContent = "›"; }
+    if (hint) { var th = svg("text", { x: x + w + 14, y: y + h / 2 + 4, "class": "th" }, g); th.textContent = hint; }
+    if (href) {
+      var go = function () { var t = document.getElementById(href); if (t) t.scrollIntoView({ behavior: reduced ? "auto" : "smooth" }); };
+      g.addEventListener("click", go);
+      g.addEventListener("keydown", function (e) { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); go(); } });
+    }
+    nodes.push(g); return g;
+  }
+  var root = node(16, rootY - 26, 120, 52, "t-root", "sysrr", "THE TOOL", null, "journey");
+  root.dataset.path = "root";
+  TREE.forEach(function (br, bi) {
+    var bh = br.m ? 44 : 32, by = br.cy - bh / 2;
+    var be = svg("path", { d: elbow(136, rootY, 190, br.cy), "class": "tedge" }, eg); be.dataset.path = "b" + bi;
+    var bn = node(190, by, 200, bh, "t-br", br.t, br.m, null, br.leaves[0].a); bn.dataset.path = "b" + bi;
+    br.leaves.forEach(function (lf, li) {
+      var le = svg("path", { d: elbow(390, br.cy, 450, lf.y + 15), "class": "tedge" }, eg); le.dataset.path = "b" + bi + " l" + lf.a;
+      var ln = node(450, lf.y, 230, 30, "t-lf", lf.t, null, lf.h, lf.a); ln.dataset.path = "b" + bi + " l" + lf.a; ln.dataset.leaf = lf.a;
+      edges.push(le);
+    });
+    edges.push(be);
+  });
+  /* hover or focus: light the path root → branch → leaf */
+  function trace(target) {
+    var want = target ? target.dataset.path.split(" ") : [];
+    el.classList.toggle("trace", want.length > 0);
+    nodes.concat(edges).forEach(function (n) {
+      var p = (n.dataset.path || "").split(" "), on = false;
+      if (want.length) {
+        if (n.dataset.path === "root") on = true;
+        else if (want.length === 1) on = p[0] === want[0];          /* a branch: all its leaves */
+        else on = p[0] === want[0] && (p.length === 1 || p[1] === want[1]);
+      }
+      n.classList.toggle("on", on);
+    });
+  }
+  nodes.forEach(function (n) {
+    if (n.dataset.path === "root") return;
+    n.addEventListener("mouseenter", function () { trace(n); });
+    n.addEventListener("focus", function () { trace(n); });
+    n.addEventListener("mouseleave", function () { trace(null); });
+    n.addEventListener("blur", function () { trace(null); });
+  });
+})();
+
+/* each part's eyebrow: ↑ Map · branch · k of n */
+parts.forEach(function (pt) {
+  var br = TREE[pt.b], k = br.leaves.findIndex(function (l) { return l.a === pt.a; }) + 1;
+  var eb = pt.el && (pt.el.querySelector(".head .eyebrow"));
+  if (eb && pt.el.classList.contains("scene")) eb.innerHTML = '<a href="#map">↑ map</a> · ' + esc(br.t) + (br.leaves.length > 1 ? " · " + k + " of " + br.leaves.length : "");
+});
+
 function currentScene() {
   var cur = null;
   scenes.forEach(function (s) { if (s.getBoundingClientRect().top <= 140) cur = s; });
   return cur;
 }
-function markChip() {
-  var c = currentScene();
-  $$("a", chips).forEach(function (a) {
-    var on = c && a.getAttribute("href") === "#" + c.id;
-    if (on && !a.classList.contains("on")) chips.scrollTo({ left: a.offsetLeft - chips.clientWidth / 2 + a.clientWidth / 2 });
-    a.classList.toggle("on", !!on);
-  });
+function currentPart() {
+  var cur = null;
+  parts.forEach(function (pt) { if (pt.el && pt.el.getBoundingClientRect().top <= 140) cur = pt; });
+  return cur;
 }
-window.addEventListener("scroll", markChip, { passive: true }); markChip();
+var lastKey = "";
+function markHere() {
+  var pt = currentPart(), key = pt ? pt.a : "";
+  if (key === lastKey) return; lastKey = key;
+  $$(".tn.t-lf").forEach(function (n) { n.classList.toggle("here", n.dataset.leaf === key); });
+  if (!pt) {   /* on the map: branches as chips */
+    crumb.innerHTML = "";
+    chips.innerHTML = TREE.map(function (br) { return '<a href="#' + br.leaves[0].a + '">' + esc(br.t) + "</a>"; }).join("");
+    return;
+  }
+  var br = TREE[pt.b];
+  crumb.innerHTML = esc(br.t) + " › <b>" + esc(pt.t) + "</b>";
+  chips.innerHTML = br.leaves.length > 1 ? br.leaves.map(function (l) {
+    return '<a href="#' + l.a + '"' + (l.a === pt.a ? ' class="on"' : "") + ">" + esc(l.t) + "</a>";
+  }).join("") : "";
+}
+window.addEventListener("scroll", markHere, { passive: true }); markHere();
 document.addEventListener("keydown", function (e) {
   if (e.altKey || e.ctrlKey || e.metaKey) return;
   var tag = (e.target.tagName || "").toLowerCase();
